@@ -11,6 +11,6 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "${{ matrix.python }}" }
-      - run: python tests/test_datalight.py
+      - run: python -X dev -W error::ResourceWarning tests/test_datalight.py
       - name: example passes the gate (with mutation check)
         run: python skills/data-light/scripts/datalight.py verify skills/data-light/examples/shop/data/model.light.json --mutate

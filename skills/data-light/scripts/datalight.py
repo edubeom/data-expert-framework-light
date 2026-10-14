@@ -544,6 +544,7 @@ def try_sqlite(model: dict, ddl_text: str | None = None) -> tuple[bool, list[str
         con.executescript(ddl_text if ddl_text is not None else ddl(model, "sqlite"))
         lines.append(f"OK: 테이블 {len(model['tables'])}개 만들기")
     except sqlite3.Error as e:
+        con.close()
         return False, [f"FAIL: 스키마 만들기 실패 -- {e}"]
     first_ids: dict[str, int] = {}
 
@@ -842,9 +843,11 @@ def _read_table(path: str, sheet=None) -> tuple[list[str], list[list]]:
         wb = load_workbook(path, read_only=True, data_only=True)
         ws = wb[sheet] if sheet else wb.worksheets[0]
         rows = [[("" if v is None else v) for v in r] for r in ws.iter_rows(values_only=True)]
+        wb.close()
         rows = [r for r in rows if any(str(v).strip() for v in r)]
         return [str(h).strip() for h in rows[0]], rows[1:]
-    raw = open(path, "rb").read()
+    with open(path, "rb") as f:
+        raw = f.read()
     for enc in ("utf-8-sig", "cp949", "euc-kr"):
         try:
             text = raw.decode(enc)
@@ -965,44 +968,45 @@ def import_apply(plan: dict, model_path: str, db_path: str, approval: str, appen
         bdir = Path(db_path).parent / "backup"
         bdir.mkdir(exist_ok=True)
         backup = bdir / f"{Path(db_path).stem}-{dt.datetime.now().strftime('%Y%m%d-%H%M%S')}.db"
-        src = sqlite3.connect(db_path)
-        dst = sqlite3.connect(backup)
-        with dst:
+        src, dst = sqlite3.connect(db_path), sqlite3.connect(backup)
+        try:
             src.backup(dst)
-        src.close()
-        dst.close()
+        finally:
+            src.close()
+            dst.close()
     con = sqlite3.connect(db_path)
     con.execute("PRAGMA foreign_keys = ON")
-    exists = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    todo = {t["name"] for t in model["tables"]} - exists
-    if todo:
-        con.executescript(ddl(model, "sqlite", only=todo))
-    have = con.execute(f"SELECT count(*) FROM {tn}").fetchone()[0]
-    if have and not append:
+    try:
+        exists = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        todo = {t["name"] for t in model["tables"]} - exists
+        if todo:
+            con.executescript(ddl(model, "sqlite", only=todo))
+        have = con.execute(f"SELECT count(*) FROM {tn}").fetchone()[0]
+        if have and not append:
+            raise SystemExit(f"{tn} 에 이미 {have}행이 있습니다 -- 같은 파일을 두 번 넣지 않도록 멈춥니다. 더하려면 --append")
+        head, rows = _read_table(plan["file"], plan.get("sheet"))
+        idx = {h: i for i, h in enumerate(head)}
+        idc = id_column(model, tn)
+        bad, n = 0, 0
+        with con:
+            for r in rows:
+                mrow, prow = {}, {}
+                for c in use:
+                    v = r[idx[c["src"]]] if idx.get(c["src"], 10 ** 9) < len(r) else None
+                    try:
+                        v = _conv(c["type"], v)
+                    except (ValueError, TypeError):
+                        bad += 1
+                        v = None
+                    (prow if c["name"] in pi_cols else mrow)[c["name"]] = v
+                cur = con.execute(f"INSERT INTO {tn} ({', '.join(mrow) or idc}) VALUES ({', '.join('?' * len(mrow)) or 'NULL'})",
+                                  list(mrow.values()))
+                if pi and prow:
+                    prow[idc] = cur.lastrowid
+                    con.execute(f"INSERT INTO pi_{tn} ({', '.join(prow)}) VALUES ({', '.join('?' * len(prow))})", list(prow.values()))
+                n += 1
+    finally:
         con.close()
-        raise SystemExit(f"{tn} 에 이미 {have}행이 있습니다 -- 같은 파일을 두 번 넣지 않도록 멈춥니다. 더하려면 --append")
-    head, rows = _read_table(plan["file"], plan.get("sheet"))
-    idx = {h: i for i, h in enumerate(head)}
-    idc = id_column(model, tn)
-    bad, n = 0, 0
-    with con:
-        for r in rows:
-            mrow, prow = {}, {}
-            for c in use:
-                v = r[idx[c["src"]]] if idx.get(c["src"], 10 ** 9) < len(r) else None
-                try:
-                    v = _conv(c["type"], v)
-                except (ValueError, TypeError):
-                    bad += 1
-                    v = None
-                (prow if c["name"] in pi_cols else mrow)[c["name"]] = v
-            cur = con.execute(f"INSERT INTO {tn} ({', '.join(mrow) or idc}) VALUES ({', '.join('?' * len(mrow)) or 'NULL'})",
-                              list(mrow.values()))
-            if pi and prow:
-                prow[idc] = cur.lastrowid
-                con.execute(f"INSERT INTO pi_{tn} ({', '.join(prow)}) VALUES ({', '.join('?' * len(prow))})", list(prow.values()))
-            n += 1
-    con.close()
     log = {"at": dt.datetime.now().isoformat(timespec="seconds"), "file": plan["file"], "table": tn, "rows": n,
            "bad_values": bad, "created_table": created, "personal_to": f"pi_{tn}" if pi else None, "backup": str(backup) if backup else None,
            "approval": approval.strip()}

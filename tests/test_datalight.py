@@ -25,6 +25,24 @@ def shop():
     return dl.load(SHOP)
 
 
+def db_rows(db, sql):
+    """open, query, close -- Windows cannot delete a temp folder while a DB file is still open"""
+    con = sqlite3.connect(db)
+    try:
+        return con.execute(sql).fetchall()
+    finally:
+        con.close()
+
+
+def db_script(db, sql):
+    con = sqlite3.connect(db)
+    try:
+        con.executescript(sql)
+        con.commit()
+    finally:
+        con.close()
+
+
 def run(*args, cwd=None):
     return subprocess.run([sys.executable, str(SKILL / "scripts" / "datalight.py"), *map(str, args)],
                           capture_output=True, text=True, encoding="utf-8", cwd=cwd)
@@ -110,6 +128,7 @@ class Build(unittest.TestCase):
         con.executescript(sql)
         names = {r[0] for r in con.execute("select name from sqlite_master where type='table'")}
         self.assertTrue({"customer", "pi_customer", "dish", "orders", "order_item"} <= names)
+        con.close()
 
     def test_postgres_ddl_shape(self):
         sql = dl.ddl(shop(), "postgresql")
@@ -359,7 +378,7 @@ class Harness(unittest.TestCase):
     def test_import_backs_up_existing_db(self):
         with tempfile.TemporaryDirectory() as d:
             db = Path(d) / "app.db"
-            sqlite3.connect(db).executescript("CREATE TABLE keep_me (x INTEGER); INSERT INTO keep_me VALUES (1);")
+            db_script(db, "CREATE TABLE keep_me (x INTEGER); INSERT INTO keep_me VALUES (1);")
             p = Path(d) / "notice.csv"
             p.write_text("제목\n휴무\n", encoding="utf-8")
             plan = dl.import_plan(str(p), "notice")
@@ -367,7 +386,7 @@ class Harness(unittest.TestCase):
             plan["approved"] = True
             log = dl.import_apply(plan, str(Path(d) / "model.light.json"), str(db), "네")
             self.assertTrue(log["backup"])
-            self.assertEqual(sqlite3.connect(log["backup"]).execute("select x from keep_me").fetchall(), [(1,)])
+            self.assertEqual(db_rows(log["backup"], "select x from keep_me"), [(1,)])
 
     def test_upgrade_carries_goals(self):
         full = dl.upgrade(shop())

@@ -6,7 +6,8 @@
 - `hook install` — pre-commit 훅 + GitHub Actions 파일 + `.gitignore`
 - `import apply` 가 쓰기 전에 `data/backup/` 에 DB 백업
 - 필수 참조 칸 비우기도 규칙 시험에 추가, 정의서 맨 위에 성공 기준
-- 저장소 CI (Ubuntu·Windows × Python 3.9·3.12)
+- 저장소 CI (Ubuntu·Windows × Python 3.9·3.12), 닫지 않은 DB·파일(ResourceWarning)을 실패로
+- Windows 수정: SQLite 연결·CSV 파일을 항상 닫음 (임시 폴더 삭제 실패 WinError 32)
 
 ## 0.1.0 — 2026-10-14
 - 첫 공개. 쉬운 정본 형식 `data-light/1`
