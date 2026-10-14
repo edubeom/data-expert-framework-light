@@ -55,11 +55,18 @@ PERSONAL_KINDS = ("name", "phone", "email", "address", "birth", "id_number", "ac
 
 # ----------------------------------------------------------------- io helpers
 def _utf8_stdio() -> None:
-    for s in (sys.stdout, sys.stderr):
+    """always print UTF-8 -- a Windows pipe defaults to cp1252/cp949 and Korean turns into ????"""
+    for st in (sys.stdout, sys.stderr):
         try:
-            s.reconfigure(errors="replace")
+            st.reconfigure(encoding="utf-8", errors="replace")
         except (AttributeError, ValueError):
             pass
+
+
+def _write(path, text: str) -> None:
+    """UTF-8 with \\n line ends on every OS (Path.write_text(newline=) needs Python 3.10)"""
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(text)
 
 
 def load(path) -> dict:
@@ -487,7 +494,7 @@ def build(model: dict, out_dir, db: str | None = None) -> list[str]:
     out.mkdir(parents=True, exist_ok=True)
     files = []
     for name, text in (("schema.sql", ddl(model, db)), ("erd.md", erd(model)), ("spec.md", spec_md(model))):
-        (out / name).write_text(text, encoding="utf-8", newline="\n")
+        _write(out / name, text)
         files.append(name)
     if spec_xlsx(model, out / "spec.xlsx"):
         files.append("spec.xlsx")
@@ -772,7 +779,9 @@ HOOK = HOOK_MARK + """ (datalight.py hook install)
 # 정본(model.light.json)이 바뀐 커밋은 verify 를 통과해야 한다. 급할 때 건너뛰기: git commit --no-verify
 changed=$(git diff --cached --name-only --diff-filter=ACM | grep 'model\\.light\\.json$')
 [ -z "$changed" ] && exit 0
-PY=$(command -v python3 || command -v python || command -v py)
+PY=""
+for c in python3 python py; do "$c" -c "import sys" >/dev/null 2>&1 && { PY=$c; break; }; done  # Windows: python3 can be a Store stub
+[ -z "$PY" ] && { echo "data-light: python 을 찾지 못해 검사를 건너뜁니다"; exit 0; }
 for m in $changed; do
   "$PY" .data-light/datalight.py verify "$m" || { echo "data-light: $m 검사 실패 -- 커밋을 멈췄습니다"; exit 1; }
 done
@@ -783,8 +792,8 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with: { python-version: "3.12" }
       - name: verify every model.light.json
         run: |
@@ -808,13 +817,13 @@ def hook_install(repo=".") -> list[str]:
         done.append(".git/hooks/pre-commit 이 이미 있어 건드리지 않았습니다 -- 그 안에 이 줄을 더하세요: "
                     "python .data-light/datalight.py verify data/model.light.json || exit 1")
     else:
-        hook.write_text("#!/bin/sh\n" + HOOK, encoding="utf-8", newline="\n")
+        _write(hook, "#!/bin/sh\n" + HOOK)
         hook.chmod(0o755)
         done.append(".git/hooks/pre-commit (커밋할 때 자동 검사)")
     wf = repo / ".github" / "workflows" / "data-light.yml"
     if not wf.exists():
         wf.parent.mkdir(parents=True, exist_ok=True)
-        wf.write_text(CI, encoding="utf-8", newline="\n")
+        _write(wf, CI)
         done.append(".github/workflows/data-light.yml (GitHub 에 올릴 때 자동 검사)")
     gi = repo / ".gitignore"
     have = gi.read_text(encoding="utf-8").splitlines() if gi.exists() else []

@@ -3,13 +3,14 @@ on: [push, pull_request]
 jobs:
   test:
     strategy:
+      fail-fast: false   # 한 환경이 실패해도 나머지 결과를 다 본다
       matrix:
         os: [ubuntu-latest, windows-latest]
         python: ["3.9", "3.12"]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with: { python-version: "${{ matrix.python }}" }
       - run: python -X dev -W error::ResourceWarning tests/test_datalight.py
       - name: example passes the gate (with mutation check)

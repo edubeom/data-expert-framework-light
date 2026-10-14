@@ -16,3 +16,6 @@
 ## 교훈 (실수 기록)
 - 2026-10-14 Windows 에서 시험 실패: SQLite 연결·파일을 닫지 않으면 Windows 는 임시 폴더를 지우지 못한다(WinError 32).
   DB 연결은 `try/finally: con.close()`, 파일은 `with open(...)`. 시험은 `python -X dev -W error::ResourceWarning` 으로 돌려 닫지 않은 것을 실패로 잡는다 (CI 도 동일).
+- 2026-10-14 CI 실패 두 가지: ① `Path.write_text(newline=)` 은 Python 3.10+ → 3.9 에서 오류. 파일 쓰기는 `_write()` 로.
+  ② Windows 파이프 출력은 cp1252 라 한글이 ???? → 출력은 항상 UTF-8 로 재설정. 시험의 `run()` 은 `PYTHONIOENCODING=cp1252` 로 Windows 를 흉내 낸다.
+  고친 뒤에는 최저 지원 버전(3.9)에서도 시험한다: `uv python install 3.9` → `$(uv python find 3.9) tests/test_datalight.py`.

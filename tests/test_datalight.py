@@ -44,8 +44,10 @@ def db_script(db, sql):
 
 
 def run(*args, cwd=None):
+    # PYTHONIOENCODING=cp1252 imitates a Windows (English) pipe -- the tool must still print readable Korean
+    env = {**os.environ, "PYTHONIOENCODING": "cp1252"}
     return subprocess.run([sys.executable, str(SKILL / "scripts" / "datalight.py"), *map(str, args)],
-                          capture_output=True, text=True, encoding="utf-8", cwd=cwd)
+                          capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=cwd, env=env)
 
 
 class Check(unittest.TestCase):
@@ -357,7 +359,8 @@ class Harness(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
                    "GIT_COMMITTER_EMAIL": "t@t"}
-            g = lambda *a: subprocess.run(["git", *a], cwd=d, capture_output=True, text=True, env=env)  # noqa: E731
+            g = lambda *a: subprocess.run(["git", *a], cwd=d, capture_output=True, text=True, encoding="utf-8",  # noqa: E731
+                                           errors="replace", env=env)  # noqa: E731
             g("init", "-q")
             (Path(d) / "data").mkdir()
             mp = Path(d) / "data" / "model.light.json"
