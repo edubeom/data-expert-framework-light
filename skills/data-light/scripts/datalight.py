@@ -44,9 +44,10 @@ import sys
 from pathlib import Path
 
 FORMAT = "data-light/1"
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 NAME = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
-TYPES = ("id", "ref", "text", "long_text", "int", "number", "money", "bool", "date", "datetime")
+TYPES = ("id", "ref", "text", "long_text", "int", "number", "money", "bool", "date", "datetime", "owner")
+ACCESS = ("members", "own", "read")
 RESERVED = {
     "all", "and", "any", "as", "asc", "between", "by", "case", "check", "column", "constraint", "create", "cross",
     "current_date", "current_time", "current_timestamp", "default", "delete", "desc", "distinct", "drop", "else", "end",
@@ -209,6 +210,11 @@ def check(model: dict) -> tuple[list[str], list[str]]:
                     err.append(f"{cw}: 꼭 있어야 하는 칸(required/key)은 on_delete 'clear' 를 쓸 수 없습니다")
             elif c.get("ref"):
                 err.append(f"{cw}: ref 는 type 이 'ref' 인 칸에만 씁니다")
+            if ty == "owner":
+                if tn.startswith("pi_"):
+                    err.append(f"{cw}: 개인정보 표에는 owner 칸을 두지 않습니다 -- 짝 테이블 {tn[3:]} 에 둡니다")
+                if c.get("unique") or c.get("choices") or "default" in c:
+                    err.append(f"{cw}: owner 칸은 로그인한 사람이 자동으로 들어갑니다 -- unique·choices·default 를 쓰지 않습니다")
             if c.get("key") and ty != "ref":
                 err.append(f"{cw}: key 표시는 ref 칸에만 (1:1 짝 테이블·연결 테이블)")
             ch = c.get("choices")
@@ -223,6 +229,27 @@ def check(model: dict) -> tuple[list[str], list[str]]:
                     err.append(f"{cw}: personal 은 true 또는 {', '.join(PERSONAL_KINDS)} 중 하나")
                 if not tn.startswith("pi_"):
                     err.append(f"{cw}: 개인정보 칸은 따로 둡니다 -- `datalight.py split <model> --write` 로 pi_{tn} 에 옮기세요")
+        owners = [c for c in cols if c.get("type") == "owner"]
+        if len(owners) > 1:
+            err.append(f"{where}: owner 칸은 표마다 하나만")
+        acc = t.get("access")
+        if acc is not None:
+            if acc not in ACCESS:
+                err.append(f"{where}: access 는 {', '.join(ACCESS)} 중 하나 (members=정해진 사람끼리, own=자기 행만, read=누구나 읽기만)")
+            elif model.get("db", "sqlite") != "postgresql":
+                warn.append(f"{where}: access 는 PostgreSQL(Supabase) 에서만 쓰입니다 -- 지금 db 는 {model.get('db', 'sqlite')}")
+            elif acc == "members" and model.get("signup") != "closed":
+                err.append(f"{where}: access members(로그인한 사람 모두)는 새 가입을 끈 사이트에서만 안전합니다 -- "
+                           "Supabase 에서 새 가입을 끄고 정본에 \"signup\": \"closed\" 를 적거나, own 을 쓰세요")
+            elif acc == "read" and tn.startswith("pi_"):
+                err.append(f"{where}: 개인정보 표는 누구나 읽기(read)로 열 수 없습니다")
+            elif acc == "own":
+                base_t = next((x for x in tb if x.get("name") == tn[3:]), None) if tn.startswith("pi_") else t
+                if not base_t or not any(c.get("type") == "owner" for c in base_t.get("columns", [])):
+                    err.append(f"{where}: access own 은 " + ("짝 테이블에" if tn.startswith("pi_") else "이 표에")
+                               + " owner 칸이 있어야 합니다 (예: {\"name\": \"owner_id\", \"label\": \"만든 사람\", \"type\": \"owner\"})")
+        elif owners and model.get("db", "sqlite") == "postgresql":
+            warn.append(f"{where}: owner 칸이 있는데 access 가 없습니다 -- 자기 행만 보게 하려면 \"access\": \"own\"")
         if tn.startswith("pi_"):
             base = tn[3:]
             if base not in names:
@@ -275,6 +302,15 @@ def check(model: dict) -> tuple[list[str], list[str]]:
                 w = str(word).strip()
                 if w and (w == t.get("label") or w.lower() == str(t.get("name", "")).lower()):
                     err.append(f"테이블 {t.get('name')}: '{w}' 는 이번에 만들지 않기로 한 것(not_doing)입니다 -- 범위를 바꾸려면 사용자와 먼저 정하세요")
+    if model.get("signup") not in (None, "open", "closed"):
+        err.append("signup 은 open(누구나 가입) 또는 closed(새 가입을 끔)")
+    outside = model.get("outside") or []
+    if not isinstance(outside, list):
+        err.append("outside 는 표 이름 목록입니다 (예: [\"log\"])")
+    else:
+        for o in outside:
+            if o in names:
+                err.append(f"outside 의 '{o}' 는 정본에도 있습니다 -- 둘 중 하나만")
     # cycles in required refs
     tbm = tables(model)
 
@@ -348,9 +384,9 @@ def sql_type(c: dict, db: str) -> str:
     if db == "postgresql":
         return {"id": "bigint", "ref": "bigint", "text": "text", "long_text": "text", "int": "integer",
                 "number": "numeric", "money": "numeric(15,2)", "bool": "boolean", "date": "date",
-                "datetime": "timestamptz"}[ty]
+                "datetime": "timestamptz", "owner": "uuid"}[ty]
     return {"id": "INTEGER", "ref": "INTEGER", "text": "TEXT", "long_text": "TEXT", "int": "INTEGER", "number": "REAL",
-            "money": "NUMERIC", "bool": "INTEGER", "date": "TEXT", "datetime": "TEXT"}[ty]
+            "money": "NUMERIC", "bool": "INTEGER", "date": "TEXT", "datetime": "TEXT", "owner": "TEXT"}[ty]
 
 
 def ddl(model: dict, db: str | None = None, only: set | None = None) -> str:
@@ -361,6 +397,8 @@ def ddl(model: dict, db: str | None = None, only: set | None = None) -> str:
     if not pg:
         out.append("PRAGMA foreign_keys = ON;  -- SQLite 는 이 줄이 있어야 참조 규칙이 동작합니다")
     else:
+        if any(c.get("type") == "owner" for t in model.get("tables", []) for c in t["columns"]):
+            out.append("-- owner 칸이 auth.uid()(로그인한 사람)를 쓰므로 Supabase 용입니다.")
         out.append("BEGIN;")
     for t in ordered(model):
         tn = t["name"]
@@ -373,6 +411,9 @@ def ddl(model: dict, db: str | None = None, only: set | None = None) -> str:
             s = f"  {c['name']} {sql_type(c, db)}"
             if ty == "id":
                 s += " GENERATED ALWAYS AS IDENTITY PRIMARY KEY" if pg else " PRIMARY KEY AUTOINCREMENT"
+            elif ty == "owner":
+                # Supabase: the signed-in user. SQLite has no sign-in, so it stays a plain optional text there
+                s += " NOT NULL DEFAULT auth.uid()" if pg else ""
             else:
                 if c.get("required") or c.get("key"):
                     s += " NOT NULL"
@@ -413,29 +454,58 @@ def ddl(model: dict, db: str | None = None, only: set | None = None) -> str:
     return "\n".join(out) + "\n"
 
 
+def _policies(model: dict, t: dict) -> list[str]:
+    """real policies from the model's "access" (members / own / read)"""
+    tn, acc = t["name"], t.get("access")
+    if acc == "members":
+        return [f"CREATE POLICY {tn}_members ON {tn} FOR ALL TO authenticated USING (true) WITH CHECK (true);"]
+    if acc == "read":
+        return [f"CREATE POLICY {tn}_read ON {tn} FOR SELECT TO anon, authenticated USING (true);"]
+    if acc == "own":
+        own = next((c["name"] for c in t["columns"] if c["type"] == "owner"), None)
+        if own:
+            cond = f"{own} = auth.uid()"
+        else:                                   # pi_ table: owner lives on the paired table
+            base = tables(model)[tn[3:]]
+            bo = next(c["name"] for c in base["columns"] if c["type"] == "owner")
+            k = id_column(model, base["name"])
+            cond = f"EXISTS (SELECT 1 FROM {base['name']} b WHERE b.{k} = {tn}.{k} AND b.{bo} = auth.uid())"
+        return [f"CREATE POLICY {tn}_own ON {tn} FOR ALL TO authenticated USING ({cond}) WITH CHECK ({cond});"]
+    return []
+
+
 def rls_sql(model: dict, only=None) -> list[str]:
     """Supabase: the public (anon / publishable) key in the site can reach every table, so RLS goes on for all.
-    No policy = nobody can read or write through that key (safe default). Pick one template per table."""
+    No policy = nobody can read or write through that key (safe default)."""
     out = ["", "-- ===== 행 접근 규칙 (RLS) =====",
            "-- Supabase 에서는 사이트 코드에 넣는 공개용 키(anon · publishable)로 누구나 모든 표에 접근을 시도할 수 있습니다.",
-           "-- 그래서 모든 표에 RLS 를 켭니다. 규칙(policy)이 하나도 없으면 공개용 키로는 아무것도 읽고 쓸 수 없습니다 (안전한 기본값).",
-           "-- 표마다 아래 틀 중 이 사이트에 맞는 것 하나를 골라 앞의 '-- ' 를 지우고 실행하세요.",
+           "-- 그래서 모든 표에 RLS 를 켭니다. 규칙(policy)이 없는 표는 공개용 키로 아무것도 읽고 쓸 수 없습니다 (안전한 기본값).",
+           "-- 규칙은 정본의 표에 \"access\" 를 적고 다시 build 하면 아래에 만들어집니다 (권장: members · own · read).",
+           "-- 틀만 있는 표는 이 파일을 고치지 말고, SQL 편집기에 붙여 넣은 뒤 고른 틀의 주석을 풀어 실행하고,",
+           "-- 실행한 규칙은 data/supabase-policies.sql 에 적어 둡니다 (이 파일을 고치면 verify 가 '정본과 다릅니다'로 멈춥니다).",
            "-- 사이트 코드에는 공개용 키만. service_role · sb_secret_ 키는 절대 넣지 않습니다. 적용 뒤 Supabase 의 Security Advisor 를 확인하세요.",
            "-- (일반 PostgreSQL 에서는 표 주인 계정에는 RLS 가 적용되지 않아 동작이 바뀌지 않습니다.)"]
+    if model.get("signup") == "closed":
+        out.append("-- 이 사이트는 새 가입을 끈 것으로 정했습니다(signup: closed). Supabase 의 가입 설정이 꺼져 있는지 확인하세요.")
     for t in ordered(model):
         tn = t["name"]
         if only is not None and tn not in only:
             continue
         out.append(f"ALTER TABLE {tn} ENABLE ROW LEVEL SECURITY;")
+        real = _policies(model, t)
+        if real:
+            out += real
+            continue
+        members = (f"--   [정해진 사람끼리 · 새 가입을 끈 경우에만] CREATE POLICY {tn}_members ON {tn} FOR ALL TO authenticated"
+                   " USING (true) WITH CHECK (true);  -- 가입이 켜져 있으면 아무나 가입해 읽고 씁니다")
+        own = (f"--   [가입형·자기 행] CREATE POLICY {tn}_own ON {tn} FOR ALL TO authenticated"
+               " USING (owner_id = auth.uid()) WITH CHECK (owner_id = auth.uid());  -- 정본에 owner 칸 + \"access\": \"own\" 이 더 쉽습니다")
         if tn.startswith("pi_"):
-            out += [f"-- {tn} 는 개인정보: 모두 읽기 규칙은 쓰지 않습니다. 본인 또는 관리자만.",
-                    f"--   [가입형·본인만] CREATE POLICY {tn}_own ON {tn} FOR ALL TO authenticated"
-                    " USING (owner_id = auth.uid()) WITH CHECK (owner_id = auth.uid());  -- owner_id uuid DEFAULT auth.uid() 칸 필요",
-                    f"--   [관리자만]     관리자를 구별하는 방법(관리자 표 또는 JWT claim)을 정한 뒤 USING 에 그 조건을 씁니다"]
+            out += [f"-- {tn} 는 개인정보: 누구나 읽기 규칙은 쓰지 않습니다. 본인 · 관리자 · (가입을 끈 경우) 정해진 사람만.",
+                    own, members,
+                    "--   [관리자만]     관리자를 구별하는 방법(관리자 표 또는 JWT claim)을 정한 뒤 USING 에 그 조건을 씁니다"]
         else:
-            out += [f"--   [정해진 사람끼리] CREATE POLICY {tn}_members ON {tn} FOR ALL TO authenticated USING (true) WITH CHECK (true);",
-                    f"--   [가입형·자기 행] CREATE POLICY {tn}_own ON {tn} FOR ALL TO authenticated"
-                    " USING (owner_id = auth.uid()) WITH CHECK (owner_id = auth.uid());  -- owner_id uuid DEFAULT auth.uid() 칸 필요",
+            out += [members, own,
                     f"--   [누구나 읽기만]   CREATE POLICY {tn}_read ON {tn} FOR SELECT TO anon, authenticated USING (true);"]
     return out
 
@@ -466,7 +536,7 @@ def erd(model: dict) -> str:
     return "\n".join(out)
 
 
-TYPE_KO = {"id": "번호(자동)", "ref": "다른 표 가리킴", "text": "글자", "long_text": "긴 글", "int": "정수", "number": "숫자",
+TYPE_KO = {"id": "번호(자동)", "ref": "다른 표 가리킴", "owner": "만든 사람(로그인)", "text": "글자", "long_text": "긴 글", "int": "정수", "number": "숫자",
            "money": "금액", "bool": "예/아니오", "date": "날짜", "datetime": "날짜+시각"}
 
 
@@ -788,7 +858,11 @@ def db_drift(model: dict, db_path) -> tuple[list[str], list[str]]:
     try:
         have = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
         tb = tables(model)
+        outside = set(model.get("outside") or [])
         for t in sorted(have):
+            if t in outside:
+                notes.append(f"{t} 는 정본 밖(outside)으로 둔 표 -- 검사하지 않습니다")
+                continue
             n = con.execute(f'SELECT count(*) FROM "{t}"').fetchone()[0]
             if t not in tb:
                 (bad if n else notes).append(f"DB 의 {t} 가 정본에서 빠졌습니다 ({n}행)" + (" -- 지우면 되돌릴 수 없습니다" if n else ""))
@@ -846,20 +920,31 @@ def verify(model_path, db_path=None, use_db=True, mutate=False) -> tuple[bool, l
 
 
 HOOK_MARK = "# data-light pre-commit"
+HOOK_END = "# data-light end"
 HOOK_VER = "# data-light-version: "
 HOOK = HOOK_MARK + """ (datalight.py hook install)
 """ + HOOK_VER + __version__ + """
-# 정본(model.light.json)이 바뀐 커밋은 verify 를 통과해야 한다.
+# 정본(model.light.json)이나 그 out/ 이 바뀐 커밋은 verify 를 통과해야 한다.
 # 멈추면 FAIL 줄을 고친 뒤 다시 저장(커밋)하세요. 검사를 건너뛰지 않습니다.
-changed=$(git diff --cached --name-only --diff-filter=ACM | grep 'model\\.light\\.json$')
-[ -z "$changed" ] && exit 0
-PY=""
-for c in python3 python py; do "$c" -c "import sys" >/dev/null 2>&1 && { PY=$c; break; }; done  # Windows: python3 can be a Store stub
-[ -z "$PY" ] && { echo "data-light: python 을 찾지 못해 검사를 건너뜁니다"; exit 0; }
-for m in $changed; do
-  "$PY" .data-light/datalight.py verify "$m" || { echo "data-light: $m 검사 실패 -- 커밋을 멈췄습니다"; exit 1; }
-done
-"""
+# (괄호 안에서만 끝내므로 이 아래에 다른 훅 내용이 있어도 그대로 돕니다)
+(
+  models=$(git -c core.quotepath=false diff --cached --name-only --diff-filter=ACMR | while IFS= read -r f; do
+    case "$f" in .claude/skills/*|.agents/skills/*) continue ;; esac   # 설치된 스킬의 예제는 검사하지 않음
+    case "$f" in
+      *model.light.json) printf '%s\\n' "$f" ;;
+      */out/*) d=${f%/out/*}; [ -f "$d/model.light.json" ] && printf '%s\\n' "$d/model.light.json" ;;
+      out/*) [ -f model.light.json ] && printf '%s\\n' model.light.json ;;
+    esac
+  done | sort -u)
+  [ -z "$models" ] && exit 0
+  PY=""
+  for c in python3 python py; do "$c" -c "import sys" >/dev/null 2>&1 && { PY=$c; break; }; done  # Windows: python3 can be a Store stub
+  [ -z "$PY" ] && { echo "data-light: python 을 찾지 못해 검사를 건너뜁니다"; exit 0; }
+  printf '%s\\n' "$models" | while IFS= read -r m; do
+    "$PY" .data-light/datalight.py verify "$m" || { echo "data-light: $m 검사 실패 -- 커밋을 멈췄습니다"; exit 1; }
+  done
+) || exit 1
+""" + HOOK_END + "\n"
 CI = """name: data-light verify
 on: [push, pull_request]
 jobs:
@@ -869,10 +954,10 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with: { python-version: "3.12" }
-      - name: verify every model.light.json
+      - name: verify every model.light.json (installed skill examples excluded)
         run: |
-          set -e
-          for m in $(git ls-files '*model.light.json'); do python .data-light/datalight.py verify "$m" --no-db; done
+          git -c core.quotepath=false ls-files '*model.light.json' | grep -v -E '^(\\.claude|\\.agents)/skills/' > "$RUNNER_TEMP/models.txt" || true
+          while IFS= read -r m; do python .data-light/datalight.py verify "$m" --no-db || exit 1; done < "$RUNNER_TEMP/models.txt"
 """
 
 
@@ -880,18 +965,30 @@ GITIGNORE_LINES = ("data/app.db", "data/backup/", "data/*.csv", "data/*.xlsx", "
                    "data/import_plan*.json", "import_plan*.json", ".env")
 
 
-def _hooks_dir(repo: Path) -> tuple[Path, str]:
-    """respect git config core.hooksPath (husky, lefthook, a shared hooks folder ...)"""
+def _git(repo: Path, *args) -> str:
     import subprocess
     try:
-        r = subprocess.run(["git", "-C", str(repo), "config", "--get", "core.hooksPath"], capture_output=True, text=True)
-        hp = r.stdout.strip()
+        r = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, encoding="utf-8", errors="replace")
+        return r.stdout.strip() if r.returncode == 0 else ""
     except OSError:
-        hp = ""
-    if hp:
-        d = Path(hp) if os.path.isabs(hp) else repo / hp
-        return d, f"{hp} (git 설정 core.hooksPath)"
-    return repo / ".git" / "hooks", ".git/hooks"
+        return ""
+
+
+def _hooks_dir(repo: Path) -> tuple[Path, str]:
+    """where git really runs hooks: core.hooksPath (husky, lefthook, shared folder) or the (worktree's common) .git/hooks"""
+    gp = _git(repo, "rev-parse", "--git-path", "hooks")
+    d = Path(gp) if gp else repo / ".git" / "hooks"
+    if not d.is_absolute():
+        d = repo / d
+    try:
+        shown = Path(os.path.relpath(d, repo)).as_posix()
+    except ValueError:
+        shown = d.as_posix()
+    return d, shown
+
+
+def _hook_label(repo: Path, shown: str) -> str:
+    return f"{shown}/pre-commit" + (" (git 설정 core.hooksPath)" if _git(repo, "config", "--get", "core.hooksPath") else "")
 
 
 def _settings(repo: Path) -> dict:
@@ -904,15 +1001,16 @@ def _settings(repo: Path) -> dict:
 
 def hook_status(repo=".") -> tuple[bool, list[str]]:
     repo = Path(repo).resolve()
-    hd, where = _hooks_dir(repo)
+    hd, shown = _hooks_dir(repo)
+    where = _hook_label(repo, shown)
     hook = hd / "pre-commit"
     tool = repo / ".data-light" / "datalight.py"
     lines, same = [f"이 도구: data-light {__version__}"], True
     if not hook.exists() or HOOK_MARK not in hook.read_text(encoding="utf-8", errors="replace"):
-        return False, lines + [f"훅: 없음 ({where}/pre-commit) -- `hook install` 필요"]
+        return False, lines + [f"훅: 없음 ({where}) -- `hook install` 필요"]
     m = re.search(re.escape(HOOK_VER) + r"(\S+)", hook.read_text(encoding="utf-8", errors="replace"))
     hv = m.group(1) if m else "(0.2 이하)"
-    lines.append(f"훅: {where}/pre-commit · {hv}")
+    lines.append(f"훅: {where} · {hv}")
     same &= hv == __version__
     if tool.exists():
         tm = re.search(r'__version__ = "([^"]+)"', tool.read_text(encoding="utf-8", errors="replace"))
@@ -929,7 +1027,7 @@ def hook_status(repo=".") -> tuple[bool, list[str]]:
 def hook_install(repo=".", ci=None, append=False) -> list[str]:
     """ci: True/False/None(=remembered choice, default on). append: add our block to someone else's pre-commit"""
     repo = Path(repo).resolve()
-    if not (repo / ".git").exists():
+    if _git(repo, "rev-parse", "--is-inside-work-tree") != "true":
         raise SystemExit(f"{repo} 는 git 저장소가 아닙니다 (git init 먼저)")
     done = []
     tool = repo / ".data-light" / "datalight.py"
@@ -942,21 +1040,25 @@ def hook_install(repo=".", ci=None, append=False) -> list[str]:
     if st.get("ci", True) != ci:
         st["ci"] = ci
         _write(repo / ".data-light" / "settings.json", json.dumps(st, ensure_ascii=False, indent=2) + "\n")
-    hd, where = _hooks_dir(repo)
+    hd, shown = _hooks_dir(repo)
+    where = _hook_label(repo, shown)
     hook = hd / "pre-commit"
     hd.mkdir(parents=True, exist_ok=True)
     old = hook.read_text(encoding="utf-8", errors="replace") if hook.exists() else ""
-    if HOOK_MARK in old:                       # ours (alone or appended) -> replace our block, keep the rest
-        _write(hook, old[:old.index(HOOK_MARK)] + HOOK)
-        done.append(f"{where}/pre-commit (다시 설치 · {__version__})")
+    if HOOK_MARK in old:                       # ours (alone or appended) -> replace only our block, keep before and after
+        i = old.index(HOOK_MARK)
+        j = old.find(HOOK_END, i)
+        rest = old[j + len(HOOK_END):].lstrip("\n") if j >= 0 else ""      # 0.3 hooks had no end mark: ours ran to the end
+        _write(hook, old[:i] + HOOK + (("\n" + rest) if rest else ""))
+        done.append(f"{where} (다시 설치 · {__version__})")
     elif old.strip() and not append:
-        done.append(f"{where}/pre-commit 이 이미 있어 건드리지 않았습니다 -- 끝에 덧붙이려면 `hook install --append`")
+        done.append(f"{where} 이 이미 있어 건드리지 않았습니다 -- 끝에 덧붙이려면 `hook install --append`")
     elif old.strip():
         _write(hook, old.rstrip("\n") + "\n\n" + HOOK)
-        done.append(f"{where}/pre-commit 끝에 덧붙임 -- 그 위에 `exit 0` 같은 줄이 있으면 여기까지 오지 않으니 확인하세요")
+        done.append(f"{where} 끝에 덧붙임 -- 그 위에 `exit 0` 같은 줄이 있으면 여기까지 오지 않으니 확인하세요")
     else:
         _write(hook, "#!/bin/sh\n" + HOOK)
-        done.append(f"{where}/pre-commit (커밋할 때 자동 검사)")
+        done.append(f"{where} (커밋할 때 자동 검사)")
     try:
         hook.chmod(0o755)
     except OSError:
@@ -984,6 +1086,11 @@ PI_HINT = [("name", r"이름|성명|성함|^name$|full_?name|(회원|고객|학�
            ("email", r"이메일|메일|e-?mail"), ("address", r"주소|address|addr"), ("birth", r"생년|생일|birth"),
            ("id_number", r"주민|여권|면허번호|passport"), ("account", r"계좌|카드번호|account_no|card")]
 NOT_PI = re.compile(r"상호|가게|업체|회사|기관|시설|상품|제품|도로명|소재지|대표전화|팩스")
+# English column names in an existing DB (import schema) -- person words only, so dish_name / hotel are not flagged
+SCHEMA_PI = [("name", r"(customer|member|user|student|employee|staff|patient|parent|guest|contact|full|person|real)_?name|^name$"),
+             ("phone", r"phone|mobile|(^|_)tel($|_)"), ("email", r"e_?mail"), ("address", r"addr"),
+             ("birth", r"birth|(^|_)dob($|_)"), ("id_number", r"ssn|passport|resident_?(no|num)"),
+             ("account", r"account_?no|card_?no|bank_?account")]
 
 
 def _read_table(path: str, sheet=None) -> tuple[list[str], list[list]]:
@@ -1099,7 +1206,7 @@ def _conv(ty: str, v):
 
 
 def import_apply(plan: dict, model_path: str, db_path: str, approval: str, append: bool = False,
-                 file: str | None = None) -> dict:
+                 file: str | None = None, force_sqlite: bool = False) -> dict:
     if not plan.get("approved"):
         raise SystemExit("approved 가 false 입니다 -- 사용자에게 계획을 보여 주고 확인받은 뒤 true 로 바꾸세요")
     if not (approval or "").strip():
@@ -1108,7 +1215,23 @@ def import_apply(plan: dict, model_path: str, db_path: str, approval: str, appen
     if miss:
         raise SystemExit(f"영문 이름이 없는 칸: {miss}")
     model = load(model_path) if os.path.exists(model_path) else {"format": FORMAT, "project": Path(model_path).parent.name, "db": "sqlite", "tables": []}
+    if model.get("db", "sqlite") != "sqlite" and not force_sqlite:
+        raise SystemExit("이 정본은 PostgreSQL(Supabase) 용입니다 -- 실제 값이 내 컴퓨터의 SQLite 파일로 남지 않도록 멈춥니다.\n"
+                         "Supabase 에는 Table Editor 의 CSV 가져오기로 넣습니다 (개인정보 칸은 pi_ 표로 나눠서). "
+                         "그래도 SQLite 에 넣으려면 --force-sqlite")
+    src = file or plan["file"]
+    if not os.path.exists(src):
+        raise SystemExit(f"원본 파일을 찾지 못했습니다: {src} -- 프로젝트 맨 위 폴더에서 실행하거나 --file 로 알려 주세요")
     tn = plan["table"]
+    if os.path.exists(db_path) and not append:             # stop before any backup / model change
+        con = sqlite3.connect(f"file:{Path(db_path).as_posix()}?mode=ro", uri=True)
+        try:
+            if con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (tn,)).fetchone():
+                have = con.execute(f'SELECT count(*) FROM "{tn}"').fetchone()[0]
+                if have:
+                    raise SystemExit(f"{tn} 에 이미 {have}행이 있습니다 -- 같은 파일을 두 번 넣지 않도록 멈춥니다. 더하려면 --append")
+        finally:
+            con.close()
     use = [c for c in plan["columns"] if not c.get("skip")]
     if tn not in tables(model):
         t = {"name": tn, "label": plan.get("label") or tn, "about": f"{Path(plan['file']).name} 에서 가져옴",
@@ -1141,12 +1264,12 @@ def import_apply(plan: dict, model_path: str, db_path: str, approval: str, appen
         bdir = Path(db_path).parent / "backup"
         bdir.mkdir(exist_ok=True)
         backup = bdir / f"{Path(db_path).stem}-{dt.datetime.now().strftime('%Y%m%d-%H%M%S')}.db"
-        src, dst = sqlite3.connect(db_path), sqlite3.connect(backup)
+        bsrc, bdst = sqlite3.connect(db_path), sqlite3.connect(backup)
         try:
-            src.backup(dst)
+            bsrc.backup(bdst)
         finally:
-            src.close()
-            dst.close()
+            bsrc.close()
+            bdst.close()
     con = sqlite3.connect(db_path)
     con.execute("PRAGMA foreign_keys = ON")
     try:
@@ -1154,12 +1277,6 @@ def import_apply(plan: dict, model_path: str, db_path: str, approval: str, appen
         todo = {t["name"] for t in model["tables"]} - exists
         if todo:
             con.executescript(ddl(model, "sqlite", only=todo))
-        have = con.execute(f"SELECT count(*) FROM {tn}").fetchone()[0]
-        if have and not append:
-            raise SystemExit(f"{tn} 에 이미 {have}행이 있습니다 -- 같은 파일을 두 번 넣지 않도록 멈춥니다. 더하려면 --append")
-        src = file or plan["file"]
-        if not os.path.exists(src):
-            raise SystemExit(f"원본 파일을 찾지 못했습니다: {src} -- 프로젝트 맨 위 폴더에서 실행하거나 --file 로 알려 주세요")
         head, rows = _read_table(src, plan.get("sheet"))
         idx = {h: i for i, h in enumerate(head)}
         idc = id_column(model, tn)
@@ -1185,7 +1302,7 @@ def import_apply(plan: dict, model_path: str, db_path: str, approval: str, appen
         con.close()
     log = {"at": dt.datetime.now().isoformat(timespec="seconds"), "file": _project_path(file or plan["file"])[0],
            "table": tn, "rows": n,
-           "bad_values": bad, "created_table": created, "personal_to": f"pi_{tn}" if pi else None, "backup": str(backup) if backup else None,
+           "bad_values": bad, "created_table": created, "personal_to": f"pi_{tn}" if pi else None, "backup": _project_path(str(backup))[0] if backup else None,
            "approval": approval.strip()}
     with open(Path(model_path).parent / "import_log.jsonl", "a", encoding="utf-8") as f:
         f.write(json.dumps(log, ensure_ascii=False) + "\n")
@@ -1289,6 +1406,14 @@ def schema_to_model(db_path) -> tuple[dict, list[str]]:
     finally:
         con.close()
     for t in out:
+        for c in t["columns"]:
+            if c["type"] in ("text", "long_text", "date") and not NOT_PI.search(c["name"]):
+                hints = SCHEMA_PI + (PI_HINT if re.search(r"[^\x00-\x7f]", c["name"]) else [])   # Korean hints only for Korean names
+                k = next((k for k, rx in hints if re.search(rx, c["name"], re.I)), None)
+                if t["name"].startswith("pi_"):          # already a personal-info table: mark every value column
+                    c["personal"] = k or True
+                elif k:
+                    issues.append(f"{t['name']}.{c['name']}: 개인정보({k})로 보입니다 -- 맞으면 \"personal\": \"{k}\" 표시 후 split")
         bad = [t["name"]] if (not NAME.match(t["name"]) or t["name"] in RESERVED) else []
         bad += [f"{t['name']}.{c['name']}" for c in t["columns"] if not NAME.match(c["name"]) or c["name"] in RESERVED]
         for b in bad:
@@ -1310,7 +1435,7 @@ def upgrade(model: dict, schema: str = "app", pi_schema: str | None = None) -> d
     ty_dom = {"id": ("식별자", "bigint", None), "ref": ("식별자", "bigint", None), "text": ("문자", "text", None),
               "long_text": ("긴글", "text", None), "int": ("정수", "integer", None), "number": ("숫자", "numeric", None),
               "money": ("금액", "numeric(15,2)", ">= 0"), "bool": ("여부", "boolean", None), "date": ("일자", "date", None),
-              "datetime": ("시각", "timestamptz", None)}
+              "datetime": ("시각", "timestamptz", None), "owner": ("사용자ID", "uuid", None)}
     domains: dict[str, dict] = {}
 
     def dom_of(t, c):
@@ -1346,7 +1471,7 @@ def upgrade(model: dict, schema: str = "app", pi_schema: str | None = None) -> d
         for c in all_columns(t):
             d = dom_of(t, c)
             col = {"name": c["name"], "kor": c.get("label") or c["name"], "domain": d,
-                   "nullable": not (c.get("required") or c.get("key") or c["type"] == "id" or c.get("auto"))}
+                   "nullable": not (c.get("required") or c.get("key") or c["type"] in ("id", "owner") or c.get("auto"))}
             if c["name"] in {k["name"] for k in keys}:
                 col["pk"] = True
             if c["type"] == "id":
@@ -1389,6 +1514,11 @@ def upgrade(model: dict, schema: str = "app", pi_schema: str | None = None) -> d
     if model.get("goals"):
         full["success_goals"] = model["goals"]
         full["dq_notes"].append("성공 기준(success_goals) " + str(len(model["goals"])) + "개 -- 전문판 스모크 테스트로 옮겨 실제 Postgres 에서도 확인")
+    if any(c.get("type") == "owner" for t in model["tables"] for c in t["columns"]):
+        full["assumptions"].append("owner 칸(로그인한 사람, uuid): Supabase 에서는 DEFAULT auth.uid() -- 전문판의 인증 방식에 맞춰 기본값을 정함")
+    if any(t.get("access") for t in model["tables"]):
+        full["assumptions"].append("표의 access(members·own·read) 는 Supabase RLS 규칙 -- 전문판의 등급×분류 권한으로 옮길 때 다시 설계: "
+                                   + ", ".join(f"{t['name']}={t['access']}" for t in model["tables"] if t.get("access")))
     if model.get("not_doing"):
         full["assumptions"].append("이번 범위 밖(만들지 않음): " + ", ".join(map(str, model["not_doing"])))
     if pi_schema:
@@ -1412,6 +1542,7 @@ def main(argv=None) -> int:
     q = isp.add_parser("apply"); q.add_argument("plan"); q.add_argument("--model", required=True); q.add_argument("--db", required=True)
     q.add_argument("--approval", required=True); q.add_argument("--append", action="store_true")
     q.add_argument("--file", help="원본 파일 위치 (계획에 파일 이름만 적혔을 때)")
+    q.add_argument("--force-sqlite", action="store_true", help="정본이 PostgreSQL 이어도 SQLite 에 넣음")
     q = isp.add_parser("schema"); q.add_argument("db"); q.add_argument("--out", default="data/model.light.json")
     q.add_argument("--force", action="store_true")
     p = sp.add_parser("verify"); p.add_argument("model"); p.add_argument("--db"); p.add_argument("--no-db", action="store_true")
@@ -1485,7 +1616,7 @@ def main(argv=None) -> int:
             for i in issues:
                 print("확인: " + i)
             return 0
-        log = import_apply(load(a.plan), a.model, a.db, a.approval, a.append, a.file)
+        log = import_apply(load(a.plan), a.model, a.db, a.approval, a.append, a.file, a.force_sqlite)
         print(json.dumps(log, ensure_ascii=False, indent=2))
         return 0
     if a.cmd == "verify":

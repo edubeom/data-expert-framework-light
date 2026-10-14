@@ -16,6 +16,8 @@
 | 키 | 뜻 |
 |---|---|
 | `db` | `sqlite`(기본) 또는 `postgresql` (Supabase 포함) |
+| `signup` | (Supabase) `open` 누구나 가입 · `closed` 새 가입을 끔. 표의 `access: members` 는 `closed` 일 때만 |
+| `outside` | 정본에 일부러 넣지 않은 DB 표 이름 목록 `["log"]` -- `verify` 의 데이터 보호 검사에서 뺀다 |
 
 ## 성공 기준 `goals` — 설계보다 먼저
 "이 데이터로 무엇을 알 수 있어야 하나?"를 확인 쿼리로 적는다. `try`·`verify` 가 샘플 데이터로 실제로 돌린다.
@@ -42,6 +44,7 @@
 | `columns` | ✔ | 칸 목록 |
 | `sample` | | 확인용 샘플 행 `[{칸: 값}]` — `try` 가 넣어 본다 |
 | `timestamps` | | 기본 true → `created_at`·`updated_at` 자동 추가. 끄려면 false |
+| `access` | | (Supabase) 이 표를 누가 쓰나: `members` 로그인한 사람 모두(새 가입을 끈 사이트만) · `own` 자기 행만(owner 칸 필요, `pi_` 는 짝 테이블의 owner 를 따름) · `read` 누구나 읽기만(`pi_` 금지). 없으면 규칙 없음 = 공개용 키로 못 씀 |
 | `unique` | | 두 칸 이상을 묶은 중복 금지 `[["member_id", "dues_month"]]` → `UNIQUE (member_id, dues_month)`. 칸 하나면 그 칸에 `"unique": true` |
 
 ## 칸
@@ -73,6 +76,7 @@
 | `bool` | 예/아니오 | INTEGER 0/1 | boolean |
 | `date` | 날짜 `2026-10-14` | TEXT | date |
 | `datetime` | 날짜+시각 | TEXT | timestamptz |
+| `owner` | 만든 사람(로그인한 계정). 표마다 하나 | TEXT (로그인이 없어 비워 둠) | uuid NOT NULL DEFAULT auth.uid() (Supabase) |
 
 ## 규칙 (`check`)
 - 테이블마다 행을 구별할 키: `id` 칸 하나, 또는 key 표시한 ref 칸(들).
@@ -95,5 +99,6 @@ ref → fk(on_delete RESTRICT/CASCADE/SET NULL) + relationships, personal → `p
 표의 unique 묶음 → `uniques`, goals → `success_goals`, not_doing → assumptions.
 
 ## PostgreSQL(Supabase) 로 만들 때
-`build --db postgresql` 은 모든 표에 `ENABLE ROW LEVEL SECURITY` 를 넣고, 표마다 규칙(policy) 틀을 주석으로 단다
-(정해진 사람끼리 · 가입형 자기 행 · 누구나 읽기만, `pi_` 표는 본인·관리자만). 규칙을 고르기 전에는 공개용 키로 아무것도 읽을 수 없다.
+`build --db postgresql` 은 모든 표에 `ENABLE ROW LEVEL SECURITY` 를 넣고, 표의 `access` 대로 실제 규칙(policy)을 만든다.
+`access` 가 없는 표는 규칙 없이 틀만 주석으로 단다(정해진 사람끼리는 "새 가입을 끈 경우에만" 이 붙음). 규칙이 없으면 공개용 키로 아무것도 읽을 수 없다.
+틀은 `out/schema.sql` 을 고치지 말고 SQL 편집기에서 실행하고, 실행한 것은 `data/supabase-policies.sql` 에 적어 둔다.

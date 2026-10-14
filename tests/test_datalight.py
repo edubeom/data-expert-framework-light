@@ -558,6 +558,215 @@ class V03(unittest.TestCase):
         self.assertTrue(dl.tables(m)["pi_dish"]["about"].startswith("반찬의 개인정보"))
 
 
+def git_env():
+    return {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@t"}
+
+
+def gitrun(d, *a):
+    return subprocess.run(["git", *a], cwd=d, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                          env=git_env())
+
+
+def supa(m):
+    """shop model made into a Supabase sign-up site: owner on customer, own access, read-only menu"""
+    m["db"] = "postgresql"
+    m["signup"] = "open"
+    c = dl.tables(m)["customer"]
+    c["columns"].insert(1, {"name": "owner_id", "label": "만든 사람", "type": "owner"})
+    c["access"] = "own"
+    dl.tables(m)["pi_customer"]["access"] = "own"
+    dl.tables(m)["dish"]["access"] = "read"
+    return m
+
+
+class V04(unittest.TestCase):
+    """0.4.0: second round of requests from dev-process-light 0.9 (U1~U8)"""
+
+    def test_u1_members_needs_closed_signup(self):
+        m = supa(shop())
+        dl.tables(m)["orders"]["access"] = "members"
+        errs = dl.check(m)[0]
+        self.assertTrue(any("새 가입을 끈" in e for e in errs))
+        m["signup"] = "closed"
+        self.assertEqual(dl.check(m)[0], [])
+        sql = dl.ddl(m, "postgresql")
+        self.assertIn("CREATE POLICY orders_members ON orders FOR ALL TO authenticated", sql)
+        self.assertIn("signup: closed", sql)
+        tmpl = dl.ddl(shop(), "postgresql")                   # templates only: the warning travels with the template
+        self.assertIn("[정해진 사람끼리 · 새 가입을 끈 경우에만]", tmpl)
+        self.assertIn("pi_customer_members", tmpl)            # pi_ also gets the members template (with the condition)
+
+    def test_u1_read_never_on_personal(self):
+        m = supa(shop())
+        dl.tables(m)["pi_customer"]["access"] = "read"
+        self.assertTrue(any("개인정보 표는 누구나 읽기" in e for e in dl.check(m)[0]))
+
+    def test_u2_owner_and_real_policies(self):
+        m = supa(shop())
+        self.assertEqual(dl.check(m)[0], [])
+        sql = dl.ddl(m, "postgresql")
+        self.assertIn("owner_id uuid NOT NULL DEFAULT auth.uid()", sql)
+        self.assertIn("CREATE POLICY customer_own ON customer FOR ALL TO authenticated USING (owner_id = auth.uid())", sql)
+        self.assertIn("EXISTS (SELECT 1 FROM customer b WHERE b.customer_id = pi_customer.customer_id AND b.owner_id = auth.uid())", sql)
+        self.assertIn("CREATE POLICY dish_read ON dish FOR SELECT TO anon, authenticated USING (true);", sql)
+        self.assertIn("owner_id TEXT", dl.ddl(m, "sqlite"))
+        self.assertTrue(dl.try_sqlite(m)[0])                  # SQLite has no sign-in: owner is optional text there
+        dl.tables(m)["orders"]["access"] = "own"              # orders has no owner column
+        self.assertTrue(any("owner 칸이 있어야" in e for e in dl.check(m)[0]))
+        full = dl.upgrade(supa(shop()))
+        own = next(c for c in full["tables"][0]["columns"] if c["name"] == "owner_id")
+        self.assertFalse(own["nullable"])
+        self.assertTrue(any("access" in a for a in full["assumptions"]))
+
+    @unittest.skipUnless(os.environ.get("PG_DSN_HOST"), "PG_DSN_HOST (psql -h 대상) 미설정")
+    def test_u2_policies_run_on_postgres(self):
+        """auth.uid() / anon / authenticated imitated; the generated SQL must run as is"""
+        host, port = os.environ["PG_DSN_HOST"], os.environ.get("PG_DSN_PORT", "5432")
+        q = lambda sql: subprocess.run(["psql", "-h", host, "-p", port, "-U", "postgres", "-v", "ON_ERROR_STOP=1", "-q"],  # noqa: E731
+                                       input=sql, capture_output=True, text=True)
+        prep = ("DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public; DROP SCHEMA IF EXISTS auth CASCADE; CREATE SCHEMA auth;"
+                "CREATE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql AS 'select null::uuid';"
+                "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='anon') THEN CREATE ROLE anon; END IF;"
+                "IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='authenticated') THEN CREATE ROLE authenticated; END IF; END $$;")
+        self.assertEqual(q(prep).returncode, 0)
+        m = supa(shop())
+        dl.tables(m)["orders"]["access"] = "members"
+        m["signup"] = "closed"
+        r = q(dl.ddl(m, "postgresql"))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r = q("SELECT count(*) FROM pg_policies;")
+        self.assertEqual(r.returncode, 0)
+
+    def test_u3_outside_tables(self):
+        with tempfile.TemporaryDirectory() as d:
+            m = shop()
+            db = Path(d) / "app.db"
+            db_script(db, dl.ddl(m, "sqlite") + "CREATE TABLE log (msg TEXT); INSERT INTO log VALUES ('x');")
+            self.assertTrue(any("log" in b for b in dl.db_drift(m, db)[0]))
+            m["outside"] = ["log"]
+            bad, notes = dl.db_drift(m, db)
+            self.assertEqual(bad, [])
+            self.assertTrue(any("정본 밖" in n for n in notes))
+            m["outside"] = ["dish"]
+            self.assertTrue(any("outside" in e for e in dl.check(m)[0]))
+
+    def test_u4_rls_comment_says_paste_not_edit(self):
+        sql = dl.ddl(shop(), "postgresql")
+        self.assertNotIn("앞의 '-- ' 를 지우고", sql)
+        self.assertIn("data/supabase-policies.sql", sql)
+
+    def test_u5_doc(self):
+        doc = (SKILL / "references" / "with-dev-process-light.md").read_text(encoding="utf-8")
+        self.assertIn(".data-light/", doc)
+        self.assertIn("data-light.yml", doc)
+        self.assertNotIn("다를 때만 `hook install` → `build`", doc)
+
+    @unittest.skipUnless(shutil.which("git"), "git 없음")
+    def test_u6_hook_paths(self):
+        with tempfile.TemporaryDirectory() as d:
+            gitrun(d, "init", "-q")
+            for sub in ("동아리/data", "data", ".claude/skills/data-light/examples/shop/data"):
+                Path(d, sub).mkdir(parents=True)
+            good = shop()
+            dl.save(good, Path(d, "동아리/data/model.light.json"))
+            dl.build(good, Path(d, "동아리/data/out"))
+            bad = shop()
+            bad["tables"][0]["name"] = "user"
+            dl.save(bad, Path(d, ".claude/skills/data-light/examples/shop/data/model.light.json"))  # installed example: ignored
+            dl.hook_install(d, ci=False)
+            gitrun(d, "add", "-A")
+            r = gitrun(d, "commit", "-qm", "ok")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            # Korean path: broken model must be caught (core.quotepath used to hide it)
+            dl.save(bad, Path(d, "동아리/data/model.light.json"))
+            gitrun(d, "add", "-A")
+            self.assertNotEqual(gitrun(d, "commit", "-qm", "bad").returncode, 0)
+            gitrun(d, "reset", "-q", "--hard")
+            # only out/ edited by hand -> checked too
+            p = Path(d, "동아리/data/out/schema.sql")
+            p.write_text(p.read_text(encoding="utf-8") + "-- 손으로 고침\n", encoding="utf-8")
+            gitrun(d, "add", "-A")
+            r = gitrun(d, "commit", "-qm", "out only")
+            self.assertNotEqual(r.returncode, 0, r.stdout)
+            self.assertIn("정본과 다릅니다", r.stdout + r.stderr)
+
+    @unittest.skipUnless(shutil.which("git"), "git 없음")
+    def test_u8_shared_hook_keeps_tail_and_runs_it(self):
+        with tempfile.TemporaryDirectory() as d:
+            gitrun(d, "init", "-q")
+            hook = Path(d, ".git/hooks/pre-commit")
+            hook.parent.mkdir(parents=True, exist_ok=True)
+            hook.write_text("#!/bin/sh\necho before > before.txt\n", encoding="utf-8")
+            dl.hook_install(d, ci=False, append=True)
+            with open(hook, "a", encoding="utf-8") as f:
+                f.write("echo after > after.txt\n")
+            dl.hook_install(d, ci=False)                       # reinstall: keeps both sides, one block
+            text = hook.read_text(encoding="utf-8")
+            self.assertEqual(text.count(dl.HOOK_MARK), 1)
+            self.assertIn("echo after", text)
+            self.assertIn("echo before", text)
+            hook.chmod(0o755)
+            Path(d, "a.txt").write_text("x", encoding="utf-8")
+            gitrun(d, "add", "a.txt")
+            r = gitrun(d, "commit", "-qm", "no model change")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertTrue(Path(d, "after.txt").exists())      # our block no longer ends the whole hook
+            label = dl._hook_label(Path(d), dl._hooks_dir(Path(d))[1])
+            self.assertEqual(label, ".git/hooks/pre-commit")
+
+    @unittest.skipUnless(shutil.which("git"), "git 없음")
+    def test_u8_worktree_and_hookspath_label(self):
+        with tempfile.TemporaryDirectory() as d:
+            main, wt = Path(d, "main"), Path(d, "wt")
+            main.mkdir()
+            gitrun(main, "init", "-q")
+            Path(main, "a.txt").write_text("x", encoding="utf-8")
+            gitrun(main, "add", "a.txt")
+            gitrun(main, "commit", "-qm", "init")
+            gitrun(main, "worktree", "add", "-q", str(wt))
+            done = dl.hook_install(wt, ci=False)
+            self.assertTrue(any("pre-commit" in x for x in done))
+            self.assertTrue(dl.hook_status(wt)[0])
+            gitrun(main, "config", "core.hooksPath", ".githooks")
+            self.assertEqual(dl._hook_label(main, dl._hooks_dir(main)[1]), ".githooks/pre-commit (git 설정 core.hooksPath)")
+
+    def test_u7_import_guards(self):
+        with tempfile.TemporaryDirectory() as d, cwd(d):
+            Path("data").mkdir()
+            m = shop()
+            m["db"] = "postgresql"
+            dl.save(m, "data/model.light.json")
+            Path("n.csv").write_text("제목\n휴무\n", encoding="utf-8")
+            plan = dl.import_plan("n.csv", "notice")
+            plan["columns"][0]["name"] = "title"
+            plan["approved"] = True
+            with self.assertRaises(SystemExit) as e:
+                dl.import_apply(plan, "data/model.light.json", "data/app.db", "네")
+            self.assertIn("PostgreSQL", str(e.exception))
+            self.assertFalse(Path("data/app.db").exists())
+            log = dl.import_apply(plan, "data/model.light.json", "data/app.db", "네", force_sqlite=True)
+            self.assertEqual(log["rows"], 1)
+            # second time: stops before making a backup; backup path in the log is project-relative
+            with self.assertRaises(SystemExit):
+                dl.import_apply(plan, "data/model.light.json", "data/app.db", "네", force_sqlite=True)
+            self.assertFalse(Path("data/backup").exists())
+            log = dl.import_apply(plan, "data/model.light.json", str(Path("data/app.db").resolve()), "네",
+                                  append=True, force_sqlite=True)
+            self.assertTrue(log["backup"].startswith("data/backup/"), log["backup"])
+
+    def test_u7_schema_flags_personal(self):
+        with tempfile.TemporaryDirectory() as d:
+            db = Path(d) / "app.db"
+            db_script(db, "CREATE TABLE member (member_id INTEGER PRIMARY KEY, CustomerName TEXT, phone TEXT,"
+                          " dish_name TEXT, hotel TEXT);")
+            issues = "\n".join(dl.schema_to_model(db)[1])
+            self.assertIn("member.CustomerName: 개인정보(name)", issues)
+            self.assertIn("member.phone: 개인정보(phone)", issues)
+            self.assertNotIn("dish_name: 개인정보", issues)
+            self.assertNotIn("hotel: 개인정보", issues)
+
+
 class Cli(unittest.TestCase):
     def test_check_exit_codes(self):
         self.assertEqual(run("check", SHOP).returncode, 0)

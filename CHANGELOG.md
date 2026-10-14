@@ -1,5 +1,20 @@
 # 변경 기록
 
+## 0.4.0 — 2026-10-15 · dev-process-light 0.9 2차 요청 반영 (U1~U8)
+보안
+- 정본에 `signup`(open/closed)·표의 `access`(members/own/read)·자료형 `owner` — build 가 **실제 RLS 규칙**을 만든다.
+  `access: members` 는 `signup: closed` 일 때만(가입이 켜져 있으면 아무나 가입해 읽음 → `check` 가 막음), `pi_` 는 `read` 금지, `pi_` 의 `own` 은 짝 테이블의 owner 를 따름
+- 규칙 틀 주석: 정해진 사람끼리에 "새 가입을 끈 경우에만", `pi_` 에도 그 틀, "생성물을 고치지 말고 SQL 편집기에서 · data/supabase-policies.sql 에 기록"
+- `import apply` 는 SQLite 전용 — 정본이 PostgreSQL 이면 멈춤(`--force-sqlite`), `import schema` 가 개인정보로 보이는 칸을 `확인:` 으로 (`pi_` 표 칸은 개인정보로 표시)
+
+흐름
+- 정본 `outside` — 일부러 정본 밖에 둔 표는 데이터 보호 검사에서 뺌
+- 훅·CI: 한글 경로(`core.quotepath=false`), `out/` 만 바뀐 저장도 검사, `.claude/skills/`·`.agents/skills/` 의 설치된 예제는 제외
+- 훅 블록을 괄호로 감싸고 끝 표시(`# data-light end`)를 둠 — 공유 훅에서 우리 블록 뒤의 내용이 계속 돌고, 다시 설치해도 남음
+- git worktree 지원(`git rev-parse --git-path hooks`), 훅 위치 표시 "`.githooks/pre-commit` (git 설정 core.hooksPath)"
+- `import apply` 가 "이미 N행"·원본 없음·PostgreSQL 정본이면 백업·정본 변경 전에 멈춤, 기록의 백업 경로는 프로젝트 기준
+- `with-dev-process-light.md`: 다시 설치 뒤 build·verify 는 늘, 파일 지도에 `.data-light/`·CI 파일, signup·access·outside 안내
+
 ## 0.3.0 — 2026-10-14 · dev-process-light 0.8 짝 맞춤 요청 반영
 보안·실제 데이터
 - `import plan` 기본 저장 위치 `data/import_plan.json`, 원본 경로는 프로젝트 기준(밖이면 파일 이름만 → apply `--file`), 개인정보 칸의 샘플 값은 가림, "올리지 않는다" 안내. 가져오기 기록도 프로젝트 기준 경로

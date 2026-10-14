@@ -53,6 +53,11 @@ description: 비전공자·작은 시스템을 위한 쉬운 데이터 설계. "
 - 개인정보 칸에는 `"personal": "name"` 처럼 종류를 표시하고 `split --write` 로 분리한다.
 - 확인용 샘플 몇 행(`sample`). 샘플 값은 **만든 값**으로 (실제 사람의 이름·전화번호 금지).
 - 두 칸을 묶어야 중복이 되는 경우는 표에 `"unique": [["member_id", "dues_month"]]` (한 회원이 같은 달 회비를 두 번 내지 않음).
+- Supabase 로 가면 누가 볼 수 있는지도 정본에 적는다 (2번 답으로 Claude 가 정함):
+  정해진 사람끼리 → `"signup": "closed"` + 표에 `"access": "members"` (Supabase 에서 **새 가입을 꺼야** 안전 -- 안 끄면 `check` 가 막는다),
+  아무나 가입 → `"signup": "open"` + 자기 것만 보는 표에 owner 칸(`{"name": "owner_id", "label": "만든 사람", "type": "owner"}`) + `"access": "own"`,
+  누구나 보는 목록 → `"access": "read"` (`pi_` 표에는 금지).
+- 일부러 정본에 넣지 않는 표(데이터가 든 기록 표 등)는 `"outside": ["log"]` -- `verify` 의 데이터 보호 검사에서 빠진다.
 - **성공 기준(`goals`)** — 1번 답을 한 문장(`say`) + 확인 쿼리(`sql`) + 샘플로 나와야 할 결과(`expect`)로. **설계보다 먼저** 쓴다.
 - **만들지 않을 것(`not_doing`)** — 범위 밖. 그 이름의 테이블이 생기면 `check` 가 막는다.
 
@@ -65,10 +70,10 @@ FAIL 은 Claude 가 고치고 다시 돌린다. 사용자에게 고치라고 하
 
 ### 4. 만들기
 - SQLite: `data/out/schema.sql` 로 `data/app.db` 를 만든다 (`sqlite3 data/app.db < data/out/schema.sql` 또는 파이썬). **이미 있는 DB 를 바꾸거나 지우기 전에는 반드시 확인**받는다.
-- 이미 DB 가 있으면 먼저 `import schema data/app.db` 로 초안을 만들고, `확인:` 줄(규칙에 안 맞는 이름·키 없는 표)은 사용자와 정한다. 이름을 바꾸면 DB 도 바꿔야 하므로 혼자 고치지 않는다.
+- 이미 DB 가 있으면 먼저 `import schema data/app.db` 로 초안을 만들고, `확인:` 줄(규칙에 안 맞는 이름·키 없는 표·개인정보로 보이는 칸)은 사용자와 정한다. 이름을 바꾸면 DB 도 바꿔야 하므로 혼자 고치지 않는다.
 - Supabase: `build --db postgresql` 결과를 SQL 편집기(또는 Supabase 도구)에 넣는다. 실제 프로젝트에 적용하기 전에 확인받는다.
-  이 SQL 은 **모든 표에 RLS(행 접근 규칙)를 켠다** — 규칙이 없으면 사이트의 공개용 키로는 아무것도 읽고 쓸 수 없다(안전한 기본값).
-  2번 답(누가 쓰나)에 맞는 틀을 골라 표마다 규칙을 켠다: 정해진 사람끼리 = 로그인한 사람만, 가입형 = 자기 행(`auth.uid()`), `pi_` = 본인·관리자만(모두 읽기 금지).
+  이 SQL 은 **모든 표에 RLS(행 접근 규칙)를 켜고**, 정본의 `access` 대로 실제 규칙(policy)을 만든다. `access` 가 없는 표는 규칙 없이(=공개용 키로 아무것도 못 함) 틀만 주석으로 남는다.
+  틀을 쓸 때는 `out/schema.sql` 을 고치지 말고 SQL 편집기에 붙여 넣은 뒤 주석을 풀어 실행하고, 실행한 규칙은 `data/supabase-policies.sql` 에 적어 둔다. 가능하면 `access` 로 정본에 적는 쪽을 쓴다.
   사이트 코드에는 **공개용 키(anon · publishable)만** 넣는다. `service_role` · `sb_secret_` 키는 절대 넣지 않는다. 적용 뒤 Supabase 의 Security Advisor 를 확인한다.
 
 ### 5. 넣기 (가져오기)
@@ -76,13 +81,15 @@ FAIL 은 Claude 가 고치고 다시 돌린다. 사용자에게 고치라고 하
    계획에는 경로가 프로젝트 기준으로만 적히고 개인정보 칸의 값은 가려진다. 그래도 실제 값 일부가 들어 있으니 **올리지 않는다**(`hook install` 이 `.gitignore` 에 넣는다). 원본이 프로젝트 밖이면 apply 때 `--file` 로 알려 준다.
 2. 계획을 표로 보여 주고(어느 칸이 개인정보로 따로 가는지 포함) "이대로 넣을까요?" 확인.
 3. 사용자가 답하면 plan 의 `approved` 를 true 로 하고 `import apply … --approval "<사용자 답 그대로>"`. 기록은 `data/import_log.jsonl`.
+   `import apply` 는 **SQLite 전용**이다. 정본이 PostgreSQL(Supabase) 이면 멈춘다 -- Supabase Table Editor 의 CSV 가져오기로 넣는다(개인정보 칸은 `pi_` 표로 나눠서).
 같은 테이블에 행이 이미 있으면 멈춘다 — 더하는 게 맞는지 묻고 `--append`.
 
 ### 지키는 장치 (git 을 쓰면)
 `hook install` 을 한 번 해 둔다(사용자에게 한 번 묻고) → 정본이 바뀐 커밋은 `verify` 를 통과해야 저장되고, GitHub 에 올리면 같은 검사가 다시 돈다.
 멈추면 FAIL 줄을 고친 뒤 다시 저장한다. **검사를 건너뛰지 않는다**(`--no-verify` 금지).
 CI 파일을 원치 않으면 `--no-ci`(기억해 둔다), 이미 다른 pre-commit 이 있으면 `--append`. `git config core.hooksPath` 가 있으면 그 폴더에 설치한다.
-다시 설치할지는 `hook status` 로 판단한다 (버전이 같으면 그대로).
+다시 설치할지는 `hook status` 로 판단한다 (버전이 같으면 그대로). 다시 설치했든 아니든 그다음 `build` → `verify` 는 늘 돌린다.
+훅은 정본과 그 `out/` 이 바뀐 저장을 검사한다(한글 폴더 이름 포함). `.claude/skills/`·`.agents/skills/` 안의 설치된 스킬 예제는 검사하지 않는다.
 설계에서 잘못을 발견하면 고치기만 하지 말고 **그 잘못을 잡는 성공 기준이나 샘플 행을 하나 더해 박제**한다.
 
 ### 6. 졸업 (필요할 때만)
