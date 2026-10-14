@@ -11,7 +11,7 @@ CREATE TABLE customer (
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
--- 손님 개인정보: 손님 의 개인정보. 본 테이블과 1:1, 본 행을 지우면 같이 지워진다
+-- 손님 개인정보: 손님의 개인정보. 본 테이블과 1:1, 본 행을 지우면 같이 지워진다
 CREATE TABLE pi_customer (
   customer_id INTEGER NOT NULL REFERENCES customer (customer_id) ON DELETE CASCADE,
   full_name TEXT NOT NULL,
@@ -51,7 +51,8 @@ CREATE TABLE order_item (
   qty INTEGER NOT NULL DEFAULT 1,
   unit_price NUMERIC NOT NULL CHECK (unit_price >= 0),
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE (orders_id, dish_id)
 );
 CREATE INDEX ix_order_item_orders_id ON order_item (orders_id);
 CREATE INDEX ix_order_item_dish_id ON order_item (dish_id);

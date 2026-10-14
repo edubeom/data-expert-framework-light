@@ -19,6 +19,8 @@
 /plugin marketplace add sungbeom78/data-expert-framework-light
 /plugin install data-expert-light
 ```
+**dev-process-light 로 설치했다면** 이 스킬이 이미 함께 들어 있습니다 — 플러그인은 따로 깔지 않아도 됩니다 (둘 다 깔면 같은 스킬이 두 번 보입니다).
+
 **스킬만** — [Releases](https://github.com/sungbeom78/data-expert-framework-light/releases) 의 `data-light-skill-<버전>.zip` 을 Claude 설정의 스킬에 올립니다.
 
 필요한 것: Python 3.9 이상 (추가 설치 없음. 엑셀을 쓰려면 `pip install openpyxl`)
@@ -53,7 +55,7 @@ python scripts/datalight.py build examples/shop/data/model.light.json --out /tmp
 ```bash
 python scripts/datalight.py verify examples/shop/data/model.light.json --mutate   # 통과/실패 관문 + 장치 검증
 ```
-명령 전체: `python scripts/datalight.py -h` · 형식: [format.md](skills/data-light/references/format.md)
+명령 전체: `python scripts/datalight.py -h` · 버전: `python scripts/datalight.py --version` · 형식: [format.md](skills/data-light/references/format.md)
 
 ## 검증 하네스 — 지시 대신 장치
 | 층 | data-light 에서 |

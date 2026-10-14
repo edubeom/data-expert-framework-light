@@ -17,8 +17,9 @@ description: 비전공자·작은 시스템을 위한 쉬운 데이터 설계. "
 | `build <model> [--db postgresql]` | `data/out/` 에 schema.sql · erd.md · spec.md (+spec.xlsx) |
 | `try <model>` | SQLite 에서 실제로 만들고 샘플을 넣고, 규칙이 나쁜 값을 막는지 확인 |
 | `import plan <csv/xlsx> --table 이름` → `import apply …` | 파일을 테이블로 (사용자 확인 후) |
+| `import schema data/app.db` | 이미 있는 SQLite DB 에서 정본 초안 (이름표는 비어 있음) |
 | `verify <model> [--mutate]` | **통과/실패 관문** — 설계 검사 + 성공 기준 + 규칙 + `out/` 최신 + DB 데이터 보호 (exit 0/1) |
-| `hook install` | 커밋할 때마다 `verify` 자동 실행 + GitHub CI 파일 |
+| `hook install [--no-ci] [--append]` · `hook status` | 커밋할 때마다 `verify` 자동 실행 + GitHub CI 파일 + `.gitignore` · 설치된 버전 확인 |
 | `upgrade <model>` | 전문판(data-expert-framework) model.json 으로 졸업 |
 
 **원칙 — "확인해 줘" 대신 확인할 수단을 남긴다.** 무엇이 되면 완성인지(성공 기준)를 먼저 정해 정본에 쿼리로 적고,
@@ -39,8 +40,9 @@ description: 비전공자·작은 시스템을 위한 쉬운 데이터 설계. "
 4. (필요할 때만) **이미 쓰는 엑셀·CSV 가 있나요?** — 있으면 그 파일에서 시작 (5단계 `import`)
 5. (필요할 때만) 헷갈리는 관계 하나 — "주문 하나에 반찬이 여러 개 들어가나요?" 처럼 예/아니오로
 
-DB 선택은 묻지 않고 정해서 알린다:
-- 혼자 쓰거나 정적 사이트 → **SQLite** ("설치가 필요 없고 파일 하나라서")
+저장 위치는 묻지 않고 2번 답으로 정해서 알린다 (설계·검사는 어느 경우든 이 정본과 `verify` 로):
+- 혼자 보는 정적 사이트(서버 없음) → **브라우저 저장소** ("서버가 없어도 되니까. 브라우저 기록을 지우면 사라지므로 내보내기 백업을 둔다") — 정본은 `"db": "sqlite"` 그대로 두고 검사용으로 쓴다
+- 내 컴퓨터에서만 쓰는 도구 → **SQLite + 작은 서버** ("설치가 필요 없고 파일 하나라서")
 - 여러 사람이 로그인해서 쓰는 웹 → **Supabase(PostgreSQL)** ("로그인·권한·백업을 같이 주니까") → `"db": "postgresql"`
 
 ### 2. 설계 — 정본 쓰기
@@ -49,7 +51,8 @@ DB 선택은 묻지 않고 정해서 알린다:
 - 자료형: id · ref · text · long_text · int · number · money · bool · date · datetime 중에서.
 - 모든 칸에 **한글 이름표(label)** — 사용자는 이것만 보면 된다.
 - 개인정보 칸에는 `"personal": "name"` 처럼 종류를 표시하고 `split --write` 로 분리한다.
-- 확인용 샘플 몇 행(`sample`).
+- 확인용 샘플 몇 행(`sample`). 샘플 값은 **만든 값**으로 (실제 사람의 이름·전화번호 금지).
+- 두 칸을 묶어야 중복이 되는 경우는 표에 `"unique": [["member_id", "dues_month"]]` (한 회원이 같은 달 회비를 두 번 내지 않음).
 - **성공 기준(`goals`)** — 1번 답을 한 문장(`say`) + 확인 쿼리(`sql`) + 샘플로 나와야 할 결과(`expect`)로. **설계보다 먼저** 쓴다.
 - **만들지 않을 것(`not_doing`)** — 범위 밖. 그 이름의 테이블이 생기면 `check` 가 막는다.
 
@@ -62,16 +65,24 @@ FAIL 은 Claude 가 고치고 다시 돌린다. 사용자에게 고치라고 하
 
 ### 4. 만들기
 - SQLite: `data/out/schema.sql` 로 `data/app.db` 를 만든다 (`sqlite3 data/app.db < data/out/schema.sql` 또는 파이썬). **이미 있는 DB 를 바꾸거나 지우기 전에는 반드시 확인**받는다.
-- Supabase: `build --db postgresql` 결과를 SQL 편집기(또는 Supabase 도구)에 넣는다. 실제 프로젝트에 적용하기 전에 확인받는다. 개인정보 테이블(`pi_`)에는 RLS(행 접근 규칙)를 켜라고 안내한다.
+- 이미 DB 가 있으면 먼저 `import schema data/app.db` 로 초안을 만들고, `확인:` 줄(규칙에 안 맞는 이름·키 없는 표)은 사용자와 정한다. 이름을 바꾸면 DB 도 바꿔야 하므로 혼자 고치지 않는다.
+- Supabase: `build --db postgresql` 결과를 SQL 편집기(또는 Supabase 도구)에 넣는다. 실제 프로젝트에 적용하기 전에 확인받는다.
+  이 SQL 은 **모든 표에 RLS(행 접근 규칙)를 켠다** — 규칙이 없으면 사이트의 공개용 키로는 아무것도 읽고 쓸 수 없다(안전한 기본값).
+  2번 답(누가 쓰나)에 맞는 틀을 골라 표마다 규칙을 켠다: 정해진 사람끼리 = 로그인한 사람만, 가입형 = 자기 행(`auth.uid()`), `pi_` = 본인·관리자만(모두 읽기 금지).
+  사이트 코드에는 **공개용 키(anon · publishable)만** 넣는다. `service_role` · `sb_secret_` 키는 절대 넣지 않는다. 적용 뒤 Supabase 의 Security Advisor 를 확인한다.
 
 ### 5. 넣기 (가져오기)
-1. `import plan 파일 --table 이름 --label 한글이름` → 칸마다 영어 이름이 비어 있다. Claude 가 채운다.
+1. 프로젝트 맨 위 폴더에서 `import plan 파일 --table 이름 --label 한글이름` → `data/import_plan.json`. 칸마다 영어 이름이 비어 있다. Claude 가 채운다.
+   계획에는 경로가 프로젝트 기준으로만 적히고 개인정보 칸의 값은 가려진다. 그래도 실제 값 일부가 들어 있으니 **올리지 않는다**(`hook install` 이 `.gitignore` 에 넣는다). 원본이 프로젝트 밖이면 apply 때 `--file` 로 알려 준다.
 2. 계획을 표로 보여 주고(어느 칸이 개인정보로 따로 가는지 포함) "이대로 넣을까요?" 확인.
 3. 사용자가 답하면 plan 의 `approved` 를 true 로 하고 `import apply … --approval "<사용자 답 그대로>"`. 기록은 `data/import_log.jsonl`.
 같은 테이블에 행이 이미 있으면 멈춘다 — 더하는 게 맞는지 묻고 `--append`.
 
 ### 지키는 장치 (git 을 쓰면)
-`hook install` 을 한 번 해 둔다 → 정본이 바뀐 커밋은 `verify` 를 통과해야 저장되고, GitHub 에 올리면 같은 검사가 다시 돈다.
+`hook install` 을 한 번 해 둔다(사용자에게 한 번 묻고) → 정본이 바뀐 커밋은 `verify` 를 통과해야 저장되고, GitHub 에 올리면 같은 검사가 다시 돈다.
+멈추면 FAIL 줄을 고친 뒤 다시 저장한다. **검사를 건너뛰지 않는다**(`--no-verify` 금지).
+CI 파일을 원치 않으면 `--no-ci`(기억해 둔다), 이미 다른 pre-commit 이 있으면 `--append`. `git config core.hooksPath` 가 있으면 그 폴더에 설치한다.
+다시 설치할지는 `hook status` 로 판단한다 (버전이 같으면 그대로).
 설계에서 잘못을 발견하면 고치기만 하지 말고 **그 잘못을 잡는 성공 기준이나 샘플 행을 하나 더해 박제**한다.
 
 ### 6. 졸업 (필요할 때만)

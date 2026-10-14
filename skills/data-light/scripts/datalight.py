@@ -17,7 +17,12 @@ Commands
                                           convert to the full framework's model.json
   verify  <model> [--db app.db|--no-db] [--mutate]
                                           one pass/fail gate: check + goals + rules + out/ fresh + DB safety
-  hook install [--repo .]                 run `verify` on every commit that changes a model (+ CI workflow)
+  hook install [--repo .] [--no-ci] [--append]
+                                          run `verify` on every commit that changes a model (+ CI workflow)
+  hook status [--repo .]                  installed hook / tool version vs this one (exit 0 same, 1 differ)
+  import schema <app.db> [--out data/model.light.json] [--force]
+                                          draft a model from an existing SQLite DB (labels left empty)
+  --version
 
 Harness idea: decide "what counts as done" first (goals / not_doing in the model), turn it into
 runnable checks (try / verify), and run them automatically at commit time (hook) and on push (CI).
@@ -39,6 +44,7 @@ import sys
 from pathlib import Path
 
 FORMAT = "data-light/1"
+__version__ = "0.3.0"
 NAME = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 TYPES = ("id", "ref", "text", "long_text", "int", "number", "money", "bool", "date", "datetime")
 RESERVED = {
@@ -223,6 +229,18 @@ def check(model: dict) -> tuple[list[str], list[str]]:
                 warn.append(f"{where}: pi_ 테이블은 짝 테이블 '{base}' 와 1:1 로 둡니다")
             if not any(c.get("type") == "ref" and c.get("key") and c.get("ref") == base for c in cols):
                 err.append(f"{where}: 짝 테이블 '{base}' 를 가리키는 key ref 칸이 필요합니다 (split 이 만들어 줍니다)")
+        combos = t.get("unique") or []
+        if not isinstance(combos, list) or not all(isinstance(u, list) for u in combos):
+            err.append(f"{where}: 표의 unique 는 칸 묶음 목록입니다 (예: [[\"member_id\", \"dues_month\"]])")
+        else:
+            for u in combos:
+                if len(u) < 2:
+                    err.append(f"{where}: unique 묶음 {u} -- 칸 하나면 그 칸에 \"unique\": true 를 씁니다")
+                miss = [x for x in u if x not in cn_seen]
+                if miss:
+                    err.append(f"{where}: unique 묶음에 없는 칸 {miss}")
+                if len(set(u)) != len(u):
+                    err.append(f"{where}: unique 묶음 {u} 에 같은 칸이 두 번")
         for i, row in enumerate(t.get("sample") or [], 1):
             bad = [k for k in row if k not in cn_seen]
             if bad:
@@ -291,7 +309,7 @@ def split(model: dict) -> list[str]:
         pt = tb.get(pn)
         if not pt:
             pt = {"name": pn, "label": (t.get("label") or t["name"]) + " 개인정보",
-                  "about": f"{t.get('label') or t['name']} 의 개인정보. 본 테이블과 1:1, 본 행을 지우면 같이 지워진다",
+                  "about": f"{t.get('label') or t['name']}의 개인정보. 본 테이블과 1:1, 본 행을 지우면 같이 지워진다",
                   "columns": [{"name": idc, "label": next((c.get("label") for c in t["columns"] if c["name"] == idc), idc),
                                "type": "ref", "ref": t["name"], "key": True, "on_delete": "delete"}]}
             model["tables"].insert(model["tables"].index(t) + 1, pt)
@@ -376,6 +394,8 @@ def ddl(model: dict, db: str | None = None, only: set | None = None) -> str:
             lines.append(s)
         if keys and keys[0]["type"] == "ref":
             lines.append(f"  PRIMARY KEY ({', '.join(k['name'] for k in keys)})")
+        for u in t.get("unique") or []:
+            lines.append(f"  UNIQUE ({', '.join(u)})")
         head = f"-- {t.get('label', tn)}" + (f": {t['about']}" if t.get("about") else "")
         out.append(f"\n{head}\nCREATE TABLE {tn} (\n" + ",\n".join(lines) + "\n);")
         for c in t["columns"]:
@@ -388,8 +408,36 @@ def ddl(model: dict, db: str | None = None, only: set | None = None) -> str:
             for c in all_columns(t):
                 lab = (c.get("label") or c["name"]) + (" [개인정보]" if c.get("personal") else "")
                 out.append(f"COMMENT ON COLUMN {t['name']}.{c['name']} IS {_q(lab)};")
+        out += rls_sql(model, only)
         out.append("COMMIT;")
     return "\n".join(out) + "\n"
+
+
+def rls_sql(model: dict, only=None) -> list[str]:
+    """Supabase: the public (anon / publishable) key in the site can reach every table, so RLS goes on for all.
+    No policy = nobody can read or write through that key (safe default). Pick one template per table."""
+    out = ["", "-- ===== 행 접근 규칙 (RLS) =====",
+           "-- Supabase 에서는 사이트 코드에 넣는 공개용 키(anon · publishable)로 누구나 모든 표에 접근을 시도할 수 있습니다.",
+           "-- 그래서 모든 표에 RLS 를 켭니다. 규칙(policy)이 하나도 없으면 공개용 키로는 아무것도 읽고 쓸 수 없습니다 (안전한 기본값).",
+           "-- 표마다 아래 틀 중 이 사이트에 맞는 것 하나를 골라 앞의 '-- ' 를 지우고 실행하세요.",
+           "-- 사이트 코드에는 공개용 키만. service_role · sb_secret_ 키는 절대 넣지 않습니다. 적용 뒤 Supabase 의 Security Advisor 를 확인하세요.",
+           "-- (일반 PostgreSQL 에서는 표 주인 계정에는 RLS 가 적용되지 않아 동작이 바뀌지 않습니다.)"]
+    for t in ordered(model):
+        tn = t["name"]
+        if only is not None and tn not in only:
+            continue
+        out.append(f"ALTER TABLE {tn} ENABLE ROW LEVEL SECURITY;")
+        if tn.startswith("pi_"):
+            out += [f"-- {tn} 는 개인정보: 모두 읽기 규칙은 쓰지 않습니다. 본인 또는 관리자만.",
+                    f"--   [가입형·본인만] CREATE POLICY {tn}_own ON {tn} FOR ALL TO authenticated"
+                    " USING (owner_id = auth.uid()) WITH CHECK (owner_id = auth.uid());  -- owner_id uuid DEFAULT auth.uid() 칸 필요",
+                    f"--   [관리자만]     관리자를 구별하는 방법(관리자 표 또는 JWT claim)을 정한 뒤 USING 에 그 조건을 씁니다"]
+        else:
+            out += [f"--   [정해진 사람끼리] CREATE POLICY {tn}_members ON {tn} FOR ALL TO authenticated USING (true) WITH CHECK (true);",
+                    f"--   [가입형·자기 행] CREATE POLICY {tn}_own ON {tn} FOR ALL TO authenticated"
+                    " USING (owner_id = auth.uid()) WITH CHECK (owner_id = auth.uid());  -- owner_id uuid DEFAULT auth.uid() 칸 필요",
+                    f"--   [누구나 읽기만]   CREATE POLICY {tn}_read ON {tn} FOR SELECT TO anon, authenticated USING (true);"]
+    return out
 
 
 def erd(model: dict) -> str:
@@ -457,7 +505,8 @@ def spec_md(model: dict) -> str:
         if r[0] != cur:
             cur = r[0]
             t = tables(model)[cur]
-            out += ["", f"## {r[1] or cur} (`{cur}`)", "", t.get("about", ""), "",
+            combo = "".join(f"\n\n함께 중복 금지: {' + '.join(u)}" for u in t.get("unique") or [])
+            out += ["", f"## {r[1] or cur} (`{cur}`)", "", t.get("about", "") + combo, "",
                     "| " + " | ".join(SPEC_HEAD[2:]) + " |", "|" + "---|" * (len(SPEC_HEAD) - 2)]
         out.append("| " + " | ".join(str(x).replace("|", "/") for x in r[2:]) + " |")
     return "\n".join(out) + "\n"
@@ -635,6 +684,24 @@ def try_sqlite(model: dict, ddl_text: str | None = None) -> tuple[bool, list[str
                         r2[o["name"]] = _fill(o, 97)
                 insert(t, r2)
             expect_block(f"{t['name']}.{c['name']} 중복", dup)
+        for u in t.get("unique") or []:
+            cols_by = {c["name"]: c for c in t["columns"]}
+
+            def dup_combo(u=u, cols_by=cols_by, uq=uq, base=base, t=t):
+                r1 = dict(base)
+                for x in u:
+                    c = cols_by[x]
+                    r1[x] = first_ids.get(c["ref"]) if c["type"] == "ref" else _fill(c, 55)
+                for o in uq:
+                    if o["name"] not in u:
+                        r1[o["name"]] = _fill(o, 61)
+                insert(t, r1)
+                r2 = dict(r1)
+                for o in uq:
+                    if o["name"] not in u:
+                        r2[o["name"]] = _fill(o, 62)
+                insert(t, r2)
+            expect_block(f"{t['name']} ({' + '.join(u)}) 함께 중복", dup_combo)
     # deleting a parent that children point to with on_delete keep
     for t in ordered(model):
         for c in t["columns"]:
@@ -673,6 +740,10 @@ def _mutants(model: dict, base: str):
     yield "선택값 규칙(CHECK IN) 하나 빼기", cut(first(lambda t, c: c.get("choices")), r" CHECK \(\w+ IN \([^)]*\)\)")
     yield "금액 음수 금지 하나 빼기", cut(first(lambda t, c: c["type"] == "money"), r" CHECK \(\w+ >= 0\)")
     yield "중복 금지(UNIQUE) 하나 빼기", cut(first(lambda t, c: c.get("unique") and c["type"] != "id"), " UNIQUE")
+    combo = next(((t["name"], u) for t in ordered(model) for u in (t.get("unique") or [])), None)
+    if combo:
+        line = f",\n  UNIQUE ({', '.join(combo[1])})"
+        yield "함께 중복 금지(UNIQUE 묶음) 하나 빼기", base.replace(line, "", 1) if line in base else None
     yield "참조(REFERENCES) 하나 빼기", cut(first(lambda t, c: c["type"] == "ref" and not single_key(t, c)),
                                        r" REFERENCES \w+ \(\w+\) ON DELETE (?:RESTRICT|CASCADE|SET NULL)")
 
@@ -775,8 +846,11 @@ def verify(model_path, db_path=None, use_db=True, mutate=False) -> tuple[bool, l
 
 
 HOOK_MARK = "# data-light pre-commit"
+HOOK_VER = "# data-light-version: "
 HOOK = HOOK_MARK + """ (datalight.py hook install)
-# 정본(model.light.json)이 바뀐 커밋은 verify 를 통과해야 한다. 급할 때 건너뛰기: git commit --no-verify
+""" + HOOK_VER + __version__ + """
+# 정본(model.light.json)이 바뀐 커밋은 verify 를 통과해야 한다.
+# 멈추면 FAIL 줄을 고친 뒤 다시 저장(커밋)하세요. 검사를 건너뛰지 않습니다.
 changed=$(git diff --cached --name-only --diff-filter=ACM | grep 'model\\.light\\.json$')
 [ -z "$changed" ] && exit 0
 PY=""
@@ -802,35 +876,105 @@ jobs:
 """
 
 
-def hook_install(repo=".") -> list[str]:
+GITIGNORE_LINES = ("data/app.db", "data/backup/", "data/*.csv", "data/*.xlsx", "data/out/spec.xlsx",
+                   "data/import_plan*.json", "import_plan*.json", ".env")
+
+
+def _hooks_dir(repo: Path) -> tuple[Path, str]:
+    """respect git config core.hooksPath (husky, lefthook, a shared hooks folder ...)"""
+    import subprocess
+    try:
+        r = subprocess.run(["git", "-C", str(repo), "config", "--get", "core.hooksPath"], capture_output=True, text=True)
+        hp = r.stdout.strip()
+    except OSError:
+        hp = ""
+    if hp:
+        d = Path(hp) if os.path.isabs(hp) else repo / hp
+        return d, f"{hp} (git 설정 core.hooksPath)"
+    return repo / ".git" / "hooks", ".git/hooks"
+
+
+def _settings(repo: Path) -> dict:
+    f = repo / ".data-light" / "settings.json"
+    try:
+        return json.loads(f.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def hook_status(repo=".") -> tuple[bool, list[str]]:
     repo = Path(repo).resolve()
-    if not (repo / ".git").is_dir():
+    hd, where = _hooks_dir(repo)
+    hook = hd / "pre-commit"
+    tool = repo / ".data-light" / "datalight.py"
+    lines, same = [f"이 도구: data-light {__version__}"], True
+    if not hook.exists() or HOOK_MARK not in hook.read_text(encoding="utf-8", errors="replace"):
+        return False, lines + [f"훅: 없음 ({where}/pre-commit) -- `hook install` 필요"]
+    m = re.search(re.escape(HOOK_VER) + r"(\S+)", hook.read_text(encoding="utf-8", errors="replace"))
+    hv = m.group(1) if m else "(0.2 이하)"
+    lines.append(f"훅: {where}/pre-commit · {hv}")
+    same &= hv == __version__
+    if tool.exists():
+        tm = re.search(r'__version__ = "([^"]+)"', tool.read_text(encoding="utf-8", errors="replace"))
+        tv = tm.group(1) if tm else "(0.2 이하)"
+        lines.append(f"도구 사본: .data-light/datalight.py · {tv}")
+        same &= tv == __version__
+    else:
+        same = False
+        lines.append("도구 사본: 없음")
+    lines.append("결과: 최신" if same else "결과: 버전이 다릅니다 -- `hook install` 로 다시 설치")
+    return same, lines
+
+
+def hook_install(repo=".", ci=None, append=False) -> list[str]:
+    """ci: True/False/None(=remembered choice, default on). append: add our block to someone else's pre-commit"""
+    repo = Path(repo).resolve()
+    if not (repo / ".git").exists():
         raise SystemExit(f"{repo} 는 git 저장소가 아닙니다 (git init 먼저)")
     done = []
     tool = repo / ".data-light" / "datalight.py"
     tool.parent.mkdir(exist_ok=True)
     tool.write_bytes(Path(__file__).read_bytes())
-    done.append(".data-light/datalight.py (도구 사본 -- 커밋해 두면 CI 와 다른 사람도 같은 검사)")
-    hook = repo / ".git" / "hooks" / "pre-commit"
-    hook.parent.mkdir(parents=True, exist_ok=True)
-    if hook.exists() and HOOK_MARK not in hook.read_text(encoding="utf-8", errors="replace"):
-        done.append(".git/hooks/pre-commit 이 이미 있어 건드리지 않았습니다 -- 그 안에 이 줄을 더하세요: "
-                    "python .data-light/datalight.py verify data/model.light.json || exit 1")
+    done.append(f".data-light/datalight.py {__version__} (도구 사본 -- 커밋해 두면 CI 와 다른 사람도 같은 검사)")
+    st = _settings(repo)
+    if ci is None:
+        ci = st.get("ci", True)
+    if st.get("ci", True) != ci:
+        st["ci"] = ci
+        _write(repo / ".data-light" / "settings.json", json.dumps(st, ensure_ascii=False, indent=2) + "\n")
+    hd, where = _hooks_dir(repo)
+    hook = hd / "pre-commit"
+    hd.mkdir(parents=True, exist_ok=True)
+    old = hook.read_text(encoding="utf-8", errors="replace") if hook.exists() else ""
+    if HOOK_MARK in old:                       # ours (alone or appended) -> replace our block, keep the rest
+        _write(hook, old[:old.index(HOOK_MARK)] + HOOK)
+        done.append(f"{where}/pre-commit (다시 설치 · {__version__})")
+    elif old.strip() and not append:
+        done.append(f"{where}/pre-commit 이 이미 있어 건드리지 않았습니다 -- 끝에 덧붙이려면 `hook install --append`")
+    elif old.strip():
+        _write(hook, old.rstrip("\n") + "\n\n" + HOOK)
+        done.append(f"{where}/pre-commit 끝에 덧붙임 -- 그 위에 `exit 0` 같은 줄이 있으면 여기까지 오지 않으니 확인하세요")
     else:
         _write(hook, "#!/bin/sh\n" + HOOK)
+        done.append(f"{where}/pre-commit (커밋할 때 자동 검사)")
+    try:
         hook.chmod(0o755)
-        done.append(".git/hooks/pre-commit (커밋할 때 자동 검사)")
+    except OSError:
+        pass
     wf = repo / ".github" / "workflows" / "data-light.yml"
-    if not wf.exists():
+    if not ci:
+        done.append("CI 파일은 만들지 않음 (--no-ci 를 기억해 두었습니다. 다시 켜려면 `hook install --ci`)")
+    elif not wf.exists():
         wf.parent.mkdir(parents=True, exist_ok=True)
         _write(wf, CI)
         done.append(".github/workflows/data-light.yml (GitHub 에 올릴 때 자동 검사)")
     gi = repo / ".gitignore"
     have = gi.read_text(encoding="utf-8").splitlines() if gi.exists() else []
-    add = [x for x in ("data/app.db", "data/backup/", ".env") if x not in have]
+    add = [x for x in GITIGNORE_LINES if x not in have]
     if add:
         with open(gi, "a", encoding="utf-8") as f:
-            f.write(("\n" if have and have[-1] else "") + "\n".join(add) + "\n")
+            f.write(("\n" if have and have[-1] else "") + "# data-light: 실제 데이터·가져오기 계획·비밀 값은 올리지 않는다\n"
+                    + "\n".join(add) + "\n")
         done.append(".gitignore 에 " + ", ".join(add))
     return done
 
@@ -895,6 +1039,19 @@ def _slug(h: str) -> str | None:
     return s if s and NAME.match(s) and s not in RESERVED else None
 
 
+def _project_path(path: str) -> tuple[str, bool]:
+    """path relative to the project (cwd), so plans and logs never carry the user's own folder names.
+    returns (path_to_store, inside_project)"""
+    ab = os.path.abspath(path)
+    try:
+        rel = os.path.relpath(ab, os.getcwd())
+    except ValueError:                         # another drive on Windows
+        return Path(ab).name, False
+    if rel.startswith(".."):
+        return Path(ab).name, False
+    return Path(rel).as_posix(), True
+
+
 def import_plan(path: str, table: str, label: str | None = None, sheet=None) -> dict:
     if not NAME.match(table) or table in RESERVED:
         raise SystemExit(f"--table '{table}': 영문 소문자·숫자·밑줄, 예약어 아님")
@@ -911,10 +1068,16 @@ def import_plan(path: str, table: str, label: str | None = None, sheet=None) -> 
         filled = sum(1 for v in vals if str(v).strip())
         cols.append({"src": h, "name": _slug(h), "label": h, "type": ty,
                      "required": bool(rows) and filled == len(rows), "personal": pk,
-                     "samples": [str(v) for v in vals[:3]]})
-    return {"format": "data-light-import/1", "file": os.path.abspath(path), "sheet": sheet, "table": table,
+                     "samples": ["(개인정보 -- 가림)"] if pk else [str(v) for v in vals[:3]]})
+    stored, inside = _project_path(path)
+    notes = []
+    if not inside:
+        notes.append("원본 파일이 프로젝트 밖에 있어 경로 대신 파일 이름만 적었습니다 -- apply 때 --file 로 위치를 알려 주세요")
+    return {"format": "data-light-import/1", "file": stored, "sheet": sheet, "table": table,
             "label": label or Path(path).stem, "rows": len(rows), "columns": cols, "approved": False,
-            "notes": ["name 이 null 인 칸은 영문 이름을 정해 채웁니다 (영문 소문자·숫자·밑줄)",
+            "notes": notes + [
+                      "이 계획 파일에는 원본의 실제 값 일부가 들어 있습니다 -- 저장소에 올리지 않습니다 (.gitignore: data/import_plan*.json)",
+                      "name 이 null 인 칸은 영문 이름을 정해 채웁니다 (영문 소문자·숫자·밑줄)",
                       "personal 은 개인정보 종류 -- 아니면 null. 개인정보 칸은 pi_ 테이블로 따로 저장됩니다",
                       "사용자 확인 후 approved 를 true 로 바꾸고 import apply 에 사용자 답을 그대로 --approval 로 넘깁니다"]}
 
@@ -935,7 +1098,8 @@ def _conv(ty: str, v):
     return s
 
 
-def import_apply(plan: dict, model_path: str, db_path: str, approval: str, append: bool = False) -> dict:
+def import_apply(plan: dict, model_path: str, db_path: str, approval: str, append: bool = False,
+                 file: str | None = None) -> dict:
     if not plan.get("approved"):
         raise SystemExit("approved 가 false 입니다 -- 사용자에게 계획을 보여 주고 확인받은 뒤 true 로 바꾸세요")
     if not (approval or "").strip():
@@ -993,7 +1157,10 @@ def import_apply(plan: dict, model_path: str, db_path: str, approval: str, appen
         have = con.execute(f"SELECT count(*) FROM {tn}").fetchone()[0]
         if have and not append:
             raise SystemExit(f"{tn} 에 이미 {have}행이 있습니다 -- 같은 파일을 두 번 넣지 않도록 멈춥니다. 더하려면 --append")
-        head, rows = _read_table(plan["file"], plan.get("sheet"))
+        src = file or plan["file"]
+        if not os.path.exists(src):
+            raise SystemExit(f"원본 파일을 찾지 못했습니다: {src} -- 프로젝트 맨 위 폴더에서 실행하거나 --file 로 알려 주세요")
+        head, rows = _read_table(src, plan.get("sheet"))
         idx = {h: i for i, h in enumerate(head)}
         idc = id_column(model, tn)
         bad, n = 0, 0
@@ -1016,12 +1183,119 @@ def import_apply(plan: dict, model_path: str, db_path: str, approval: str, appen
                 n += 1
     finally:
         con.close()
-    log = {"at": dt.datetime.now().isoformat(timespec="seconds"), "file": plan["file"], "table": tn, "rows": n,
+    log = {"at": dt.datetime.now().isoformat(timespec="seconds"), "file": _project_path(file or plan["file"])[0],
+           "table": tn, "rows": n,
            "bad_values": bad, "created_table": created, "personal_to": f"pi_{tn}" if pi else None, "backup": str(backup) if backup else None,
            "approval": approval.strip()}
     with open(Path(model_path).parent / "import_log.jsonl", "a", encoding="utf-8") as f:
         f.write(json.dumps(log, ensure_ascii=False) + "\n")
     return log
+
+
+# ----------------------------------------------------------------- import schema (existing SQLite DB -> draft model)
+def _light_type(decl: str) -> str:
+    d = (decl or "").upper()
+    if "BOOL" in d:
+        return "bool"
+    if "DATETIME" in d or "TIMESTAMP" in d:
+        return "datetime"
+    if "DATE" in d:
+        return "date"
+    if "INT" in d:
+        return "int"
+    if any(k in d for k in ("REAL", "FLOA", "DOUB", "NUMERIC", "DECIMAL")):
+        return "number"
+    return "text"
+
+
+def schema_to_model(db_path) -> tuple[dict, list[str]]:
+    """read tables / keys / references / NOT NULL / UNIQUE from SQLite. labels stay empty for a person to fill"""
+    con = sqlite3.connect(f"file:{Path(db_path).as_posix()}?mode=ro", uri=True)
+    issues, out = [], []
+    od = {"CASCADE": "delete", "SET NULL": "clear"}
+    try:
+        names = [r[0] for r in con.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")]
+        for tn in names:
+            create = con.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (tn,)).fetchone()[0] or ""
+            info = con.execute(f'PRAGMA table_info("{tn}")').fetchall()      # cid, name, type, notnull, dflt, pk
+            fks = {r[3]: r for r in con.execute(f'PRAGMA foreign_key_list("{tn}")')}  # from -> (id,seq,table,from,to,upd,del,match)
+            single_uq = set()
+            combos = []
+            for ix in con.execute(f'PRAGMA index_list("{tn}")'):            # seq, name, unique, origin, partial
+                if ix[2] and ix[3] in ("u", "c"):
+                    cols = [r[2] for r in con.execute(f'PRAGMA index_info("{ix[1]}")')]
+                    (single_uq.update(cols) if len(cols) == 1 else combos.append(cols))
+            pks = [r for r in info if r[5]]
+            cols = []
+            names_here = {r[1] for r in info}
+            for cid, cn, decl, notnull, dflt, pk in info:
+                if cn in ("created_at", "updated_at"):
+                    continue
+                col = {"name": cn, "label": ""}
+                if pk and len(pks) == 1 and "INT" in (decl or "").upper() and cn not in fks:
+                    col["type"] = "id"
+                elif cn in fks:
+                    f = fks[cn]
+                    col.update({"type": "ref", "ref": f[2]})
+                    if od.get(f[6]):
+                        col["on_delete"] = od[f[6]]
+                    if pk:
+                        col["key"] = True
+                    elif notnull:
+                        col["required"] = True
+                else:
+                    col["type"] = _light_type(decl)
+                    # SQLite keeps no date/bool/money types -- recover them from CHECK rules and names
+                    q = rf'"?{re.escape(cn)}"?'
+                    m_in = re.search(rf"CHECK\s*\(\s*{q}\s+IN\s*\(([^)]*)\)\s*\)", create, re.I)
+                    if m_in:
+                        vals = [v.strip().strip("'\"") for v in m_in.group(1).split(",")]
+                        if col["type"] == "int" and sorted(vals) == ["0", "1"]:
+                            col["type"] = "bool"
+                        else:
+                            col["choices"] = [int(v) if col["type"] == "int" and re.fullmatch(r"-?\d+", v) else v for v in vals]
+                            if col["type"] not in ("int",):
+                                col["type"] = "text"
+                    elif re.search(rf"CHECK\s*\(\s*{q}\s*>=\s*0\s*\)", create, re.I) and col["type"] == "number":
+                        col["type"] = "money"
+                    elif col["type"] == "text" and re.search(r"(^|_)date$|_on$|_day$", cn):
+                        col["type"] = "date"
+                    elif col["type"] == "text" and re.search(r"_at$|_time$", cn):
+                        col["type"] = "datetime"
+                    if notnull or pk:
+                        col["required"] = True
+                    if pk and len(pks) > 1:
+                        issues.append(f"{tn}.{cn}: 여러 칸으로 된 키는 다른 표를 가리키는 칸(ref)만 지원 -- 설계를 사람이 확인")
+                if cn in single_uq and col["type"] != "id":
+                    col["unique"] = True
+                if dflt is not None and col["type"] not in ("id", "ref"):
+                    v = dflt.strip("'\"")
+                    if re.fullmatch(r"-?\d+(\.\d+)?", v):
+                        v = float(v) if "." in v else int(v)
+                    if col["type"] == "bool" and v in (0, 1):
+                        v = bool(v)
+                    if not (isinstance(v, str) and v.upper().startswith("CURRENT_")):
+                        col["default"] = v
+                cols.append(col)
+            t = {"name": tn, "label": "", "columns": cols}
+            if not ({"created_at", "updated_at"} <= names_here):
+                t["timestamps"] = False
+            if combos:
+                t["unique"] = combos
+            if not pks:
+                issues.append(f"{tn}: 행을 구별할 키(PRIMARY KEY)가 없습니다 -- {tn}_id 를 더할지 사람이 정함")
+            out.append(t)
+    finally:
+        con.close()
+    for t in out:
+        bad = [t["name"]] if (not NAME.match(t["name"]) or t["name"] in RESERVED) else []
+        bad += [f"{t['name']}.{c['name']}" for c in t["columns"] if not NAME.match(c["name"]) or c["name"] in RESERVED]
+        for b in bad:
+            issues.append(f"{b}: 이름이 규칙(영어 소문자·숫자·밑줄, 예약어 아님)에 맞지 않습니다 -- 바꾸려면 DB 도 함께 바꿔야 하니 사람이 결정")
+    model = {"format": FORMAT, "project": Path(db_path).stem, "db": "sqlite",
+             "goals": [], "not_doing": [], "tables": out}
+    return model, issues
 
 
 # ----------------------------------------------------------------- upgrade (to the full framework)
@@ -1097,6 +1371,8 @@ def upgrade(model: dict, schema: str = "app", pi_schema: str | None = None) -> d
             term(c["name"], c.get("label"), d, c.get("about"))
         tt = {"name": t["name"], "kor": t.get("label") or t["name"], "kind": kind, "is_pi": t["name"].startswith("pi_"),
               "description": t.get("about") or (t.get("label") or t["name"]), "columns": cols}
+        if t.get("unique"):
+            tt["uniques"] = [list(u) for u in t["unique"]]
         tbl_out.append(tt)
         term(t["name"], t.get("label"), None, t.get("about"))
     words = [{"kor": tok, "abbr": tok, "full": tok, "is_class": tok in CLASS_TOKENS,
@@ -1124,6 +1400,7 @@ def upgrade(model: dict, schema: str = "app", pi_schema: str | None = None) -> d
 def main(argv=None) -> int:
     _utf8_stdio()
     ap = argparse.ArgumentParser(prog="datalight", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--version", action="version", version=f"data-light {__version__}")
     sp = ap.add_subparsers(dest="cmd", required=True)
     p = sp.add_parser("check"); p.add_argument("model")
     p = sp.add_parser("split"); p.add_argument("model"); p.add_argument("--write", action="store_true")
@@ -1131,13 +1408,20 @@ def main(argv=None) -> int:
     p = sp.add_parser("try"); p.add_argument("model")
     p = sp.add_parser("import"); isp = p.add_subparsers(dest="sub", required=True)
     q = isp.add_parser("plan"); q.add_argument("file"); q.add_argument("--table", required=True); q.add_argument("--label")
-    q.add_argument("--sheet"); q.add_argument("--out", default="import_plan.json")
+    q.add_argument("--sheet"); q.add_argument("--out", default="data/import_plan.json")
     q = isp.add_parser("apply"); q.add_argument("plan"); q.add_argument("--model", required=True); q.add_argument("--db", required=True)
     q.add_argument("--approval", required=True); q.add_argument("--append", action="store_true")
+    q.add_argument("--file", help="원본 파일 위치 (계획에 파일 이름만 적혔을 때)")
+    q = isp.add_parser("schema"); q.add_argument("db"); q.add_argument("--out", default="data/model.light.json")
+    q.add_argument("--force", action="store_true")
     p = sp.add_parser("verify"); p.add_argument("model"); p.add_argument("--db"); p.add_argument("--no-db", action="store_true")
     p.add_argument("--mutate", action="store_true", help="일부러 규칙을 하나씩 빼 보고 검사가 잡는지 확인")
     p = sp.add_parser("hook"); hsp = p.add_subparsers(dest="sub", required=True)
     q = hsp.add_parser("install"); q.add_argument("--repo", default=".")
+    g = q.add_mutually_exclusive_group(); g.add_argument("--no-ci", dest="ci", action="store_false", default=None)
+    g.add_argument("--ci", dest="ci", action="store_true")
+    q.add_argument("--append", action="store_true", help="이미 있는 pre-commit 끝에 덧붙임")
+    q = hsp.add_parser("status"); q.add_argument("--repo", default=".")
     p = sp.add_parser("upgrade"); p.add_argument("model"); p.add_argument("--out", default="model.json")
     p.add_argument("--schema", default="app"); p.add_argument("--pi-schema")
     a = ap.parse_args(argv)
@@ -1188,16 +1472,32 @@ def main(argv=None) -> int:
             for c in plan["columns"]:
                 print(f"  {c['src']:<16} → {c['name'] or '(이름 필요)':<16} {TYPE_KO[c['type']]:<8}"
                       + (f" 개인정보:{c['personal']}" if c['personal'] else ""))
+            for n in plan["notes"][:2]:
+                print("참고: " + n)
             return 0
-        log = import_apply(load(a.plan), a.model, a.db, a.approval, a.append)
+        if a.sub == "schema":
+            if os.path.exists(a.out) and not a.force:
+                print(f"{a.out} 가 이미 있습니다 -- 덮어쓰려면 --force (다른 이름은 --out)")
+                return 1
+            m, issues = schema_to_model(a.db)
+            save(m, a.out)
+            print(f"초안 → {a.out}: 표 {len(m['tables'])}개. 한글 이름표(label)·성공 기준(goals)은 사람과 함께 채웁니다")
+            for i in issues:
+                print("확인: " + i)
+            return 0
+        log = import_apply(load(a.plan), a.model, a.db, a.approval, a.append, a.file)
         print(json.dumps(log, ensure_ascii=False, indent=2))
         return 0
     if a.cmd == "verify":
         ok, lines = verify(a.model, a.db, not a.no_db, a.mutate)
         print("\n".join(lines))
         return 0 if ok else 1
+    if a.cmd == "hook" and a.sub == "status":
+        same, lines = hook_status(a.repo)
+        print("\n".join(lines))
+        return 0 if same else 1
     if a.cmd == "hook":
-        for d in hook_install(a.repo):
+        for d in hook_install(a.repo, a.ci, a.append):
             print("만듦: " + d)
         print("이제 정본을 고쳐 커밋하면 verify 가 자동으로 돕니다. 시험: 정본에 일부러 오류를 넣고 커밋해 보세요")
         return 0

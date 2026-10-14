@@ -42,6 +42,7 @@
 | `columns` | ✔ | 칸 목록 |
 | `sample` | | 확인용 샘플 행 `[{칸: 값}]` — `try` 가 넣어 본다 |
 | `timestamps` | | 기본 true → `created_at`·`updated_at` 자동 추가. 끄려면 false |
+| `unique` | | 두 칸 이상을 묶은 중복 금지 `[["member_id", "dues_month"]]` → `UNIQUE (member_id, dues_month)`. 칸 하나면 그 칸에 `"unique": true` |
 
 ## 칸
 | 키 | 뜻 |
@@ -82,7 +83,7 @@
 
 ## `verify` 가 보는 것 (통과/실패 관문)
 1. `check` — 위 규칙 + 성공 기준 형식
-2. `try` — 샘플 넣기, 성공 기준 쿼리 결과, 나쁜 값(빈 값·목록 밖·음수 금액·중복·없는 대상·지우면 안 되는 행 삭제)이 막히는지
+2. `try` — 샘플 넣기, 성공 기준 쿼리 결과, 나쁜 값(빈 값·목록 밖·음수 금액·중복·묶음 중복·없는 대상·지우면 안 되는 행 삭제)이 막히는지
 3. `out/` 이 정본과 같은지 (정본을 고치고 build 를 잊으면 실패)
 4. 옆에 `app.db` 가 있으면: 데이터가 든 테이블·칸이 정본에서 빠졌는지 (되돌릴 수 없는 변경 → 실패)
 5. `--mutate`: 규칙을 하나씩 일부러 빼고 2번이 잡아내는지 (검사 장치 검증)
@@ -91,4 +92,8 @@
 이 형식은 data-expert-framework `model.json` 의 부분집합이다. `upgrade` 가 변환한다:
 type → domains, label → terms(한글명), 이름 토큰 → words(한글명은 전문판 공통 사전 대조 때 정리),
 ref → fk(on_delete RESTRICT/CASCADE/SET NULL) + relationships, personal → `pi`/`pi_type`, `pi_` 테이블 → `is_pi`,
-goals → `success_goals`, not_doing → assumptions.
+표의 unique 묶음 → `uniques`, goals → `success_goals`, not_doing → assumptions.
+
+## PostgreSQL(Supabase) 로 만들 때
+`build --db postgresql` 은 모든 표에 `ENABLE ROW LEVEL SECURITY` 를 넣고, 표마다 규칙(policy) 틀을 주석으로 단다
+(정해진 사람끼리 · 가입형 자기 행 · 누구나 읽기만, `pi_` 표는 본인·관리자만). 규칙을 고르기 전에는 공개용 키로 아무것도 읽을 수 없다.

@@ -11,6 +11,7 @@
 - 의존성은 파이썬 표준 라이브러리만 (openpyxl 은 선택). 새 패키지를 필수로 만들지 않는다.
 - 정본 형식(`references/format.md`)을 바꾸면 `upgrade` 와 시험도 같이 고친다. 형식은 전문판 `model.json` 의 부분집합을 유지한다.
 - 고친 뒤: `python -X dev -W error::ResourceWarning tests/test_datalight.py` (pytest 도 가능).
+- 버전을 올릴 때는 `VERSION`·`datalight.py` 의 `__version__`·`.claude-plugin/*.json` 을 함께 (시험이 맞는지 본다). dev-process-light 가 이 버전을 짝으로 고정해 쓴다.
 - 사용자에게 보이는 말은 쉬운 한국어로.
 
 ## 교훈 (실수 기록)

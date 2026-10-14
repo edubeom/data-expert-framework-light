@@ -2,6 +2,7 @@
 
 Full-framework compatibility: set DEF_SCRIPTS to data-expert-framework's skills/data-modeling/scripts
 to also run its check_dictionary / export_all on the upgrade output (skipped otherwise)."""
+import contextlib
 import copy
 import json
 import os
@@ -23,6 +24,17 @@ SHOP = SKILL / "examples" / "shop" / "data" / "model.light.json"
 
 def shop():
     return dl.load(SHOP)
+
+
+@contextlib.contextmanager
+def cwd(d):
+    """run inside a project folder (import plans store paths relative to it). leave before the temp dir is removed"""
+    old = os.getcwd()
+    os.chdir(d)
+    try:
+        yield
+    finally:
+        os.chdir(old)
 
 
 def db_rows(db, sql):
@@ -184,7 +196,7 @@ class Import(unittest.TestCase):
         return p
 
     def test_plan_inference(self):
-        with tempfile.TemporaryDirectory() as d:
+        with tempfile.TemporaryDirectory() as d, cwd(d):
             plan = dl.import_plan(str(self._csv(d)), "member", "회원")
             by = {c["src"]: c for c in plan["columns"]}
             self.assertEqual(plan["rows"], 2)
@@ -195,10 +207,13 @@ class Import(unittest.TestCase):
             self.assertEqual(by["회비"]["type"], "money")
             self.assertEqual(by["활동여부"]["type"], "bool")
             self.assertTrue(by["회원명"]["required"])
+            self.assertEqual(by["회원명"]["samples"], ["(개인정보 -- 가림)"])     # real names never land in the plan
+            self.assertEqual(by["상호"]["samples"][0], "하나상회")
+            self.assertEqual(plan["file"], "members.csv")                    # relative, no user folder names
             self.assertFalse(by["연락처"]["required"])
 
     def test_apply_needs_approval_then_loads(self):
-        with tempfile.TemporaryDirectory() as d:
+        with tempfile.TemporaryDirectory() as d, cwd(d):
             plan = dl.import_plan(str(self._csv(d, "utf-8-sig")), "member", "회원")
             names = {"회원명": "member_name", "연락처": "phone", "가입일": "join_date", "회비": "fee",
                      "활동여부": "active_yn", "상호": "shop_name"}
@@ -228,7 +243,7 @@ class Import(unittest.TestCase):
 
     def test_apply_into_existing_model_with_refs(self):
         """new table added next to an existing model whose tables reference each other"""
-        with tempfile.TemporaryDirectory() as d:
+        with tempfile.TemporaryDirectory() as d, cwd(d):
             model = Path(d) / "model.light.json"
             m = shop()
             dl.save(m, model)
@@ -318,7 +333,7 @@ class Harness(unittest.TestCase):
 
     def test_mutations_all_caught(self):
         res = dl.mutation_check(shop())
-        self.assertEqual(len(res), 5)
+        self.assertEqual(len(res), 6)
         self.assertTrue(all(c for _, c in res), res)
 
     def test_mutation_detects_weak_probe(self):
@@ -379,7 +394,7 @@ class Harness(unittest.TestCase):
             self.assertIn("data/app.db", (Path(d) / ".gitignore").read_text(encoding="utf-8"))
 
     def test_import_backs_up_existing_db(self):
-        with tempfile.TemporaryDirectory() as d:
+        with tempfile.TemporaryDirectory() as d, cwd(d):
             db = Path(d) / "app.db"
             db_script(db, "CREATE TABLE keep_me (x INTEGER); INSERT INTO keep_me VALUES (1);")
             p = Path(d) / "notice.csv"
@@ -395,6 +410,152 @@ class Harness(unittest.TestCase):
         full = dl.upgrade(shop())
         self.assertEqual(len(full["success_goals"]), 3)
         self.assertTrue(any("결제" in a for a in full["assumptions"]))
+
+
+class V03(unittest.TestCase):
+    """0.3.0: requests from dev-process-light 0.8 (A1~C3)"""
+
+    def test_version_matches(self):
+        v = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
+        self.assertEqual(dl.__version__, v)
+        self.assertIn(v, run("--version").stdout)
+        for f in (".claude-plugin/plugin.json", ".claude-plugin/marketplace.json"):
+            self.assertIn(f'"{v}"', (ROOT / f).read_text(encoding="utf-8"))
+
+    def test_a1_plan_outside_project_keeps_only_name(self):
+        with tempfile.TemporaryDirectory() as src, tempfile.TemporaryDirectory() as proj, cwd(proj):
+            p = Path(src) / "secret-folder-name" / "m.csv"
+            p.parent.mkdir()
+            p.write_text("이름,메모\n김하나,안녕\n", encoding="utf-8")
+            plan = dl.import_plan(str(p), "member")
+            self.assertEqual(plan["file"], "m.csv")
+            self.assertNotIn("secret-folder-name", json.dumps(plan, ensure_ascii=False))
+            plan["columns"][0]["name"], plan["columns"][1]["name"] = "member_name", "memo"
+            plan["approved"] = True
+            Path("data").mkdir()
+            with self.assertRaises(SystemExit):           # not in the project -> must be told where
+                dl.import_apply(plan, "data/model.light.json", "data/app.db", "네")
+            log = dl.import_apply(plan, "data/model.light.json", "data/app.db", "네", file=str(p))
+            self.assertEqual(log["file"], "m.csv")
+            self.assertNotIn("secret-folder-name", Path("data/import_log.jsonl").read_text(encoding="utf-8"))
+
+    def test_a1_cli_default_out_in_data(self):
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "x.csv").write_text("제목\n휴무\n", encoding="utf-8")
+            r = run("import", "plan", "x.csv", "--table", "notice", cwd=d)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertTrue(Path(d, "data", "import_plan.json").exists())
+            self.assertFalse(Path(d, "import_plan.json").exists())
+            self.assertIn("저장소에 올리지", r.stdout)
+
+    def test_a3_rls_on_every_table(self):
+        m = shop()
+        sql = dl.ddl(m, "postgresql")
+        for t in m["tables"]:
+            self.assertIn(f"ALTER TABLE {t['name']} ENABLE ROW LEVEL SECURITY;", sql)
+        self.assertIn("service_role", sql)
+        self.assertNotIn("_read ON pi_customer", sql)            # no read-all template for personal data
+        self.assertNotIn("ROW LEVEL", dl.ddl(m, "sqlite"))
+
+    def test_a4_hook_never_suggests_skipping(self):
+        self.assertNotIn("--no-verify", dl.HOOK)
+        self.assertIn(dl.__version__, dl.HOOK)
+
+    def test_b2_unique_combo(self):
+        m = shop()
+        self.assertIn("UNIQUE (orders_id, dish_id)", dl.ddl(m, "sqlite"))
+        ok, lines = dl.try_sqlite(m)
+        self.assertTrue(ok, lines)
+        self.assertTrue(any("함께 중복" in l and l.startswith("OK") for l in lines))
+        self.assertEqual(dl.tables(dl.upgrade(m) and m)["order_item"]["unique"], [["orders_id", "dish_id"]])
+        full = {t["name"]: t for t in dl.upgrade(m)["tables"]}
+        self.assertEqual(full["order_item"]["uniques"], [["orders_id", "dish_id"]])
+        bad = shop()
+        dl.tables(bad)["order_item"]["unique"] = [["orders_id"], ["nope", "dish_id"], "x"]
+        errs = dl.check(bad)[0]
+        self.assertTrue(any("표의 unique" in e for e in errs))
+        bad = shop()
+        dl.tables(bad)["order_item"]["unique"] = [["orders_id"], ["nope", "dish_id"]]
+        errs = dl.check(bad)[0]
+        self.assertTrue(any("칸 하나면" in e for e in errs))
+        self.assertTrue(any("nope" in e for e in errs))
+
+    def test_b3_schema_roundtrip(self):
+        """model -> SQLite -> import schema -> same structure, and verify sees no data-losing drift"""
+        with tempfile.TemporaryDirectory() as d:
+            m = shop()
+            db = Path(d) / "app.db"
+            db_script(db, dl.ddl(m, "sqlite"))
+            draft, issues = dl.schema_to_model(db)
+            self.assertEqual(issues, [])
+            self.assertEqual(dl.check(draft)[0], [])
+            got = {t["name"]: {c["name"]: c["type"] for c in t["columns"]} for t in draft["tables"]}
+            lossy = {"long_text": "text"}                    # SQLite cannot tell long text from short text
+            want = {t["name"]: {c["name"]: lossy.get(c["type"], c["type"]) for c in t["columns"]} for t in m["tables"]}
+            self.assertEqual(got, want)
+            dt_ = dl.tables(draft)
+            self.assertEqual(dt_["order_item"]["unique"], [["orders_id", "dish_id"]])
+            self.assertTrue(next(c for c in dt_["customer"]["columns"] if c["name"] == "nickname")["unique"])
+            self.assertEqual(next(c for c in dt_["order_item"]["columns"] if c["name"] == "orders_id")["on_delete"], "delete")
+            self.assertTrue(next(c for c in dt_["pi_customer"]["columns"] if c["name"] == "customer_id")["key"])
+            grade = next(c for c in dt_["customer"]["columns"] if c["name"] == "grade")
+            self.assertEqual((grade["choices"], grade["default"]), (["일반", "단골"], "일반"))
+            self.assertIs(next(c for c in dt_["dish"]["columns"] if c["name"] == "on_sale")["default"], True)
+            mp = Path(d) / "model.light.json"
+            dl.save(draft, mp)
+            self.assertEqual(dl.db_drift(draft, db)[0], [])
+
+    def test_b3_schema_flags_bad_names(self):
+        with tempfile.TemporaryDirectory() as d:
+            db = Path(d) / "app.db"
+            db_script(db, 'CREATE TABLE "order"(id INTEGER PRIMARY KEY, Memo TEXT); CREATE TABLE logs(msg TEXT);')
+            draft, issues = dl.schema_to_model(db)
+            text = "\n".join(issues)
+            self.assertIn("order:", text)
+            self.assertIn("order.Memo", text)
+            self.assertIn("logs: 행을 구별할 키", text)
+            r = run("import", "schema", db, "--out", Path(d) / "m.json")
+            self.assertEqual(r.returncode, 0)
+            self.assertEqual(run("import", "schema", db, "--out", Path(d) / "m.json").returncode, 1)   # no overwrite
+
+    @unittest.skipUnless(shutil.which("git"), "git 없음")
+    def test_b4_b5_hook_options(self):
+        with tempfile.TemporaryDirectory() as d:
+            g = lambda *a: subprocess.run(["git", *a], cwd=d, capture_output=True, text=True,  # noqa: E731
+                                          encoding="utf-8", errors="replace")
+            g("init", "-q")
+            self.assertFalse(dl.hook_status(d)[0])
+            dl.hook_install(d, ci=False)
+            self.assertFalse(Path(d, ".github").exists())
+            dl.hook_install(d)                                   # remembers --no-ci
+            self.assertFalse(Path(d, ".github").exists())
+            self.assertTrue(dl.hook_status(d)[0])
+            gi = Path(d, ".gitignore").read_text(encoding="utf-8")
+            for line in dl.GITIGNORE_LINES:                      # A2
+                self.assertIn(line, gi.splitlines())
+            hook = Path(d, ".git", "hooks", "pre-commit")
+            hook.write_text(hook.read_text(encoding="utf-8").replace(dl.__version__, "0.0.1"), encoding="utf-8")
+            same, lines = dl.hook_status(d)
+            self.assertFalse(same)
+            self.assertTrue(any("0.0.1" in l for l in lines))
+            # someone else's hook in core.hooksPath
+            g("config", "core.hooksPath", ".githooks")
+            Path(d, ".githooks").mkdir()
+            Path(d, ".githooks", "pre-commit").write_text("#!/bin/sh\necho lint\n", encoding="utf-8")
+            done = dl.hook_install(d)
+            self.assertTrue(any("건드리지 않았습니다" in x for x in done))
+            dl.hook_install(d, append=True)
+            dl.hook_install(d, append=True)                      # again: replaces our block, no duplicate
+            text = Path(d, ".githooks", "pre-commit").read_text(encoding="utf-8")
+            self.assertTrue(text.startswith("#!/bin/sh\necho lint"))
+            self.assertEqual(text.count(dl.HOOK_MARK), 1)
+            self.assertTrue(dl.hook_status(d)[0])
+
+    def test_c1_split_wording(self):
+        m = shop()
+        dl.tables(m)["dish"]["columns"].append({"name": "chef_name", "label": "x", "type": "text", "personal": "name"})
+        dl.split(m)
+        self.assertTrue(dl.tables(m)["pi_dish"]["about"].startswith("반찬의 개인정보"))
 
 
 class Cli(unittest.TestCase):

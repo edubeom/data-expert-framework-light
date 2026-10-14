@@ -83,7 +83,7 @@
     {
       "name": "pi_customer",
       "label": "손님 개인정보",
-      "about": "손님 의 개인정보. 본 테이블과 1:1, 본 행을 지우면 같이 지워진다",
+      "about": "손님의 개인정보. 본 테이블과 1:1, 본 행을 지우면 같이 지워진다",
       "columns": [
         {
           "name": "customer_id",
@@ -260,6 +260,12 @@
           "qty": 2,
           "unit_price": 5000
         }
+      ],
+      "unique": [
+        [
+          "orders_id",
+          "dish_id"
+        ]
       ]
     }
   ]
