@@ -5,6 +5,7 @@ to also run its check_dictionary / export_all on the upgrade output (skipped oth
 import copy
 import json
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -147,6 +148,7 @@ class Try(unittest.TestCase):
 
     def test_without_samples(self):
         m = shop()
+        m.pop("goals")
         for t in m["tables"]:
             t.pop("sample", None)
         ok, lines = dl.try_sqlite(m)
@@ -264,6 +266,115 @@ class Upgrade(unittest.TestCase):
                 self.assertIn(r.returncode, (0, 77), r.stdout + r.stderr)
 
 
+class Harness(unittest.TestCase):
+    """success criteria → runnable checks → commit hook / CI → irreversible-change guard → mutation check"""
+
+    def test_goals_pass_and_fail(self):
+        ok, lines = dl.try_sqlite(shop())
+        self.assertTrue(ok)
+        self.assertEqual(sum("성공 기준" in l and l.startswith("OK") for l in lines), 3)
+        m = shop()
+        m["goals"][0]["expect"] = [["옆집", 1]]
+        m["goals"][1]["expect"] = 5
+        m["goals"].append({"say": "없는 칸", "sql": "SELECT nope FROM dish"})
+        ok, lines = dl.try_sqlite(m)
+        self.assertFalse(ok)
+        self.assertEqual(sum(l.startswith("FAIL: 성공 기준") for l in lines), 3)
+
+    def test_goal_rules(self):
+        m = shop()
+        m["goals"] = [{"say": "x", "sql": "DELETE FROM dish"}, {"say": "y", "sql": "SELECT 1; DROP TABLE dish"},
+                      {"say": "z"}, {"say": "w", "sql": "SELECT 1", "expect": "many"}]
+        errs = dl.check(m)[0]
+        self.assertEqual(sum("성공 기준" in e for e in errs), 4)
+        m.pop("goals")
+        self.assertTrue(any("성공 기준(goals)" in w for w in dl.check(m)[1]))
+
+    def test_not_doing_fence(self):
+        m = shop()
+        m["tables"].append({"name": "payment", "label": "결제", "columns": [{"name": "payment_id", "type": "id"}]})
+        self.assertTrue(any("not_doing" in e for e in dl.check(m)[0]))
+
+    def test_mutations_all_caught(self):
+        res = dl.mutation_check(shop())
+        self.assertEqual(len(res), 5)
+        self.assertTrue(all(c for _, c in res), res)
+
+    def test_mutation_detects_weak_probe(self):
+        """if a rule exists in SQL but the model forgot to say so, try cannot see it -> device has a hole"""
+        m = shop()
+        base = dl.ddl(m, "sqlite")
+        broken = base.replace(" CHECK (status IN ('접수', '준비', '완료', '취소'))", "")
+        self.assertNotEqual(base, broken)
+        self.assertFalse(dl.try_sqlite(m, broken)[0])
+
+    def test_verify_stale_and_drift(self):
+        with tempfile.TemporaryDirectory() as d:
+            mp = Path(d) / "model.light.json"
+            m = shop()
+            dl.save(m, mp)
+            dl.build(m, Path(d) / "out")
+            ok, lines = dl.verify(mp)
+            self.assertTrue(ok, lines)
+            m["tables"][1]["label"] = "반찬류"
+            dl.save(m, mp)
+            ok, lines = dl.verify(mp)
+            self.assertFalse(ok)
+            self.assertTrue(any("build" in l for l in lines))
+            dl.build(m, Path(d) / "out")
+            con = sqlite3.connect(Path(d) / "app.db")
+            con.executescript(dl.ddl(m, "sqlite"))
+            con.execute("ALTER TABLE dish ADD COLUMN old_note TEXT")
+            con.execute("INSERT INTO dish(dish_name, price, old_note) VALUES ('김치', 3000, '메모')")
+            con.commit()
+            con.close()
+            ok, lines = dl.verify(mp)
+            self.assertFalse(ok)
+            self.assertTrue(any("old_note" in l and "되돌릴 수 없습니다" in l for l in lines))
+            self.assertTrue(dl.verify(mp, use_db=False)[0])
+
+    @unittest.skipUnless(shutil.which("git"), "git 없음")
+    def test_hook_blocks_bad_commit(self):
+        with tempfile.TemporaryDirectory() as d:
+            env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+                   "GIT_COMMITTER_EMAIL": "t@t"}
+            g = lambda *a: subprocess.run(["git", *a], cwd=d, capture_output=True, text=True, env=env)  # noqa: E731
+            g("init", "-q")
+            (Path(d) / "data").mkdir()
+            mp = Path(d) / "data" / "model.light.json"
+            dl.save(shop(), mp)
+            done = dl.hook_install(d)
+            self.assertTrue(any("pre-commit" in x for x in done))
+            g("add", "-A")
+            self.assertEqual(g("commit", "-qm", "ok").returncode, 0)
+            m = shop()
+            m["tables"][0]["name"] = "user"
+            dl.save(m, mp)
+            g("add", "-A")
+            r = g("commit", "-qm", "bad")
+            self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("커밋을 멈췄습니다", r.stdout + r.stderr)
+            self.assertIn("data/app.db", (Path(d) / ".gitignore").read_text(encoding="utf-8"))
+
+    def test_import_backs_up_existing_db(self):
+        with tempfile.TemporaryDirectory() as d:
+            db = Path(d) / "app.db"
+            sqlite3.connect(db).executescript("CREATE TABLE keep_me (x INTEGER); INSERT INTO keep_me VALUES (1);")
+            p = Path(d) / "notice.csv"
+            p.write_text("제목\n휴무\n", encoding="utf-8")
+            plan = dl.import_plan(str(p), "notice")
+            plan["columns"][0]["name"] = "title"
+            plan["approved"] = True
+            log = dl.import_apply(plan, str(Path(d) / "model.light.json"), str(db), "네")
+            self.assertTrue(log["backup"])
+            self.assertEqual(sqlite3.connect(log["backup"]).execute("select x from keep_me").fetchall(), [(1,)])
+
+    def test_upgrade_carries_goals(self):
+        full = dl.upgrade(shop())
+        self.assertEqual(len(full["success_goals"]), 3)
+        self.assertTrue(any("결제" in a for a in full["assumptions"]))
+
+
 class Cli(unittest.TestCase):
     def test_check_exit_codes(self):
         self.assertEqual(run("check", SHOP).returncode, 0)
@@ -285,6 +396,15 @@ class Cli(unittest.TestCase):
             before = p.read_text(encoding="utf-8")
             self.assertIn("미리보기", run("split", p).stdout)
             self.assertEqual(before, p.read_text(encoding="utf-8"))
+
+    def test_verify_exit_codes(self):
+        self.assertEqual(run("verify", SHOP, "--mutate").returncode, 0)
+        with tempfile.TemporaryDirectory() as d:
+            m = shop()
+            m["goals"][2]["expect"] = 9
+            p = Path(d) / "m.json"
+            dl.save(m, p)
+            self.assertEqual(run("verify", p).returncode, 1)
 
     def test_try_and_upgrade(self):
         self.assertEqual(run("try", SHOP).returncode, 0)

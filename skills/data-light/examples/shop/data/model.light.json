@@ -2,6 +2,42 @@
   "format": "data-light/1",
   "project": "반찬가게 주문",
   "db": "sqlite",
+  "goals": [
+    {
+      "say": "손님별 주문 금액 합계를 볼 수 있다",
+      "sql": "SELECT c.nickname, SUM(i.qty * i.unit_price) FROM customer c JOIN orders o ON o.customer_id = c.customer_id JOIN order_item i ON i.orders_id = o.orders_id GROUP BY c.nickname",
+      "expect": [
+        [
+          "옆집",
+          10000
+        ]
+      ]
+    },
+    {
+      "say": "판매 중인 반찬만 골라 볼 수 있다",
+      "sql": "SELECT dish_name FROM dish WHERE on_sale",
+      "expect": [
+        [
+          "멸치볶음"
+        ]
+      ]
+    },
+    {
+      "say": "주문 상태별 건수를 셀 수 있다",
+      "sql": "SELECT status, COUNT(*) FROM orders GROUP BY status",
+      "expect": [
+        [
+          "접수",
+          1
+        ]
+      ]
+    }
+  ],
+  "not_doing": [
+    "결제",
+    "배송 추적",
+    "회원 로그인"
+  ],
   "tables": [
     {
       "name": "customer",

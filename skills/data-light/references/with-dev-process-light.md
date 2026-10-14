@@ -26,8 +26,10 @@ dev-process-light 에서 이미 정한 것은 다시 묻지 않는다:
    └─ import_log.jsonl   가져오기 기록
 ```
 - 코드(화면·API)는 정본의 테이블·칸 이름을 그대로 쓴다.
+- dev-process-light 에서 정한 **완료 기준·만들지 않을 것**이 있으면 데이터 쪽 `goals`·`not_doing` 으로 옮겨 적는다 (같은 말을 다시 묻지 않는다).
+- git 을 쓰는 프로젝트면 `datalight.py hook install` — 정본이 바뀐 커밋은 `verify` 를 통과해야 한다.
 - dev-process-light 의 기획 문서에 "데이터" 절이 있으면 ERD(`data/out/erd.md`) 링크를 단다.
 - `.gitignore` 에 `data/app.db`, `data/*.csv`, `data/*.xlsx`, `.env` 를 넣는다.
 
 ## 돌아가기
-설계·확인·만들기가 끝나면 dev-process-light 흐름(화면 만들기 등)으로 돌아간다. 이후 저장할 것이 바뀌면 정본을 고치고 `check → build → try` 를 다시 돌린다.
+설계·확인·만들기가 끝나면 dev-process-light 흐름(화면 만들기 등)으로 돌아간다. 이후 저장할 것이 바뀌면 정본을 고치고 `build → verify` 를 다시 돌린다 (훅을 설치했으면 커밋할 때 자동).

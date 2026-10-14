@@ -2,6 +2,19 @@
 
 DB: sqlite
 
+## 성공 기준 -- 이 데이터로 할 수 있어야 하는 것
+
+`datalight.py verify` 가 아래 확인 쿼리를 샘플 데이터로 실제로 돌려 봅니다.
+
+1. 손님별 주문 금액 합계를 볼 수 있다  
+   `SELECT c.nickname, SUM(i.qty * i.unit_price) FROM customer c JOIN orders o ON o.customer_id = c.customer_id JOIN order_item i ON i.orders_id = o.orders_id GROUP BY c.nickname`
+2. 판매 중인 반찬만 골라 볼 수 있다  
+   `SELECT dish_name FROM dish WHERE on_sale`
+3. 주문 상태별 건수를 셀 수 있다  
+   `SELECT status, COUNT(*) FROM orders GROUP BY status`
+
+**이번에 만들지 않을 것:** 결제, 배송 추적, 회원 로그인
+
 
 ## 손님 (`customer`)
 

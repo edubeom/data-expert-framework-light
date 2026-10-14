@@ -8,7 +8,8 @@
 - 작은 홈페이지·동아리·가게·개인 기록처럼 **가벼운 시스템**용
 - 질문은 쉽게 3~5개. 어떤 DB·자료형을 쓸지는 Claude 가 정하고 **왜 그런지 한 줄로** 알려 줍니다
 - 이름·전화번호 같은 **개인정보는 자동으로 따로** 보관합니다
-- 갖고 있는 **엑셀·CSV** 에서 시작할 수 있습니다 (넣기 전에 꼭 물어봅니다)
+- 갖고 있는 **엑셀·CSV** 에서 시작할 수 있습니다 (넣기 전에 꼭 물어보고, 넣기 전 DB 를 백업합니다)
+- **"확인해 줘" 대신 확인 장치**: "이 데이터로 무엇을 알 수 있어야 하나"를 먼저 정해 두면, 매번 실제로 돌려 보고 통과해야 완성입니다
 - [dev-process-light](https://github.com/sungbeom78/dev-process-light) 와 함께 쓰면 홈페이지 만들기 → 데이터 저장까지 한 흐름
 
 ## 설치
@@ -27,9 +28,9 @@ Claude 에게 그냥 말하세요.
 ```
 동아리 회원이랑 회비 낸 기록을 저장하고 싶어
 ```
-1. Claude 가 몇 가지를 물어봅니다 — 무엇을 기록하나요? 누가 쓰나요? 사람 정보가 들어가나요?
+1. Claude 가 몇 가지를 물어봅니다 — 무엇을 기록하나요? **그걸로 무엇을 알고 싶나요?** 누가 쓰나요? 사람 정보가 들어가나요?
 2. 설계도(그림)와 표를 보여 주며 "이렇게 맞나요?" 하고 확인합니다
-3. 맞으면 SQL·정의서를 만들고, 실제로 넣어 보며 규칙을 시험합니다
+3. 맞으면 SQL·정의서를 만들고, 샘플을 넣어 **알고 싶던 것이 실제로 나오는지**, 잘못된 값은 막히는지 시험합니다 (`verify`)
 4. 원하면 갖고 있는 엑셀을 넣어 줍니다
 
 만들어지는 파일 (프로젝트의 `data/` 폴더):
@@ -49,7 +50,20 @@ python scripts/datalight.py check examples/shop/data/model.light.json
 python scripts/datalight.py try   examples/shop/data/model.light.json
 python scripts/datalight.py build examples/shop/data/model.light.json --out /tmp/shop
 ```
+```bash
+python scripts/datalight.py verify examples/shop/data/model.light.json --mutate   # 통과/실패 관문 + 장치 검증
+```
 명령 전체: `python scripts/datalight.py -h` · 형식: [format.md](skills/data-light/references/format.md)
+
+## 검증 하네스 — 지시 대신 장치
+| 층 | data-light 에서 |
+|---|---|
+| ① 성공 기준 | 정본의 `goals`(알아야 할 것 + 확인 쿼리 + 기대 결과), `not_doing`(만들지 않을 것) |
+| ② 테스트 | `verify` — 설계 검사·성공 기준·규칙 시험·`out/` 최신 여부를 한 번에, 통과/실패로 |
+| ③ 커밋 훅 | `hook install` — 정본이 바뀐 커밋은 `verify` 를 통과해야 저장 |
+| ④ CI 게이트 | 같은 명령의 GitHub Actions 파일을 함께 만듦 |
+| 되돌릴 수 없는 일 | 적재는 확인 답 + 자동 백업, 데이터가 든 테이블·칸이 정본에서 빠지면 `verify` 실패 |
+| 장치 검증 | `verify --mutate` — 규칙을 하나씩 일부러 빼서 검사가 잡는지 확인 |
 
 ## 더 큰 시스템이 되면 — 전문판
 데이터가 많아지거나 암호화·권한 등급·공통 용어 사전·데이터 레이크가 필요해지면

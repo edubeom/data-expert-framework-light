@@ -7,6 +7,8 @@
   "format": "data-light/1",
   "project": "반찬가게 주문",
   "db": "sqlite",
+  "goals": [ { 성공 기준 }, ... ],
+  "not_doing": ["결제", "배송 추적"],
   "tables": [ { 테이블 }, ... ]
 }
 ```
@@ -14,6 +16,22 @@
 | 키 | 뜻 |
 |---|---|
 | `db` | `sqlite`(기본) 또는 `postgresql` (Supabase 포함) |
+
+## 성공 기준 `goals` — 설계보다 먼저
+"이 데이터로 무엇을 알 수 있어야 하나?"를 확인 쿼리로 적는다. `try`·`verify` 가 샘플 데이터로 실제로 돌린다.
+
+| 키 | 뜻 |
+|---|---|
+| `say` | 한 문장 (`손님별 주문 금액 합계를 볼 수 있다`) |
+| `sql` | 조회 한 문장 (SELECT/WITH 만. 데이터를 바꾸는 문장은 `check` 가 막는다). SQLite·PostgreSQL 양쪽에서 도는 표준 SQL 로 |
+| `expect` | 생략 → 1행 이상 · 숫자 → 정확한 행 수 · `[[...], ...]` → 정확한 결과(순서 무관) |
+
+```json
+{"say": "판매 중인 반찬만 골라 볼 수 있다", "sql": "SELECT dish_name FROM dish WHERE on_sale", "expect": [["멸치볶음"]]}
+```
+
+## 만들지 않을 것 `not_doing`
+이번 범위 밖. 테이블의 `name` 이나 `label` 이 이 목록과 같으면 `check` 가 막는다 — 범위를 넓히려면 사용자와 먼저 정한다.
 
 ## 테이블
 | 키 | 필수 | 뜻 |
@@ -62,7 +80,15 @@
 - 개인정보(`personal`) 칸은 `pi_` 테이블에만 → `split --write` 가 `pi_<테이블>`(본 테이블과 1:1, 같이 지워짐)로 옮긴다.
 - 이름은 영어 소문자·숫자·밑줄, SQL 예약어 금지.
 
+## `verify` 가 보는 것 (통과/실패 관문)
+1. `check` — 위 규칙 + 성공 기준 형식
+2. `try` — 샘플 넣기, 성공 기준 쿼리 결과, 나쁜 값(빈 값·목록 밖·음수 금액·중복·없는 대상·지우면 안 되는 행 삭제)이 막히는지
+3. `out/` 이 정본과 같은지 (정본을 고치고 build 를 잊으면 실패)
+4. 옆에 `app.db` 가 있으면: 데이터가 든 테이블·칸이 정본에서 빠졌는지 (되돌릴 수 없는 변경 → 실패)
+5. `--mutate`: 규칙을 하나씩 일부러 빼고 2번이 잡아내는지 (검사 장치 검증)
+
 ## 전문판과의 관계
 이 형식은 data-expert-framework `model.json` 의 부분집합이다. `upgrade` 가 변환한다:
 type → domains, label → terms(한글명), 이름 토큰 → words(한글명은 전문판 공통 사전 대조 때 정리),
-ref → fk(on_delete RESTRICT/CASCADE/SET NULL) + relationships, personal → `pi`/`pi_type`, `pi_` 테이블 → `is_pi`.
+ref → fk(on_delete RESTRICT/CASCADE/SET NULL) + relationships, personal → `pi`/`pi_type`, `pi_` 테이블 → `is_pi`,
+goals → `success_goals`, not_doing → assumptions.

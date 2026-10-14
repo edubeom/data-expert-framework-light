@@ -15,6 +15,12 @@ Commands
   import apply <plan.json> --model <model> --db data/app.db --approval "<사용자 답 그대로>"
   upgrade <model> [--out model.json] [--schema app] [--pi-schema pi]
                                           convert to the full framework's model.json
+  verify  <model> [--db app.db|--no-db] [--mutate]
+                                          one pass/fail gate: check + goals + rules + out/ fresh + DB safety
+  hook install [--repo .]                 run `verify` on every commit that changes a model (+ CI workflow)
+
+Harness idea: decide "what counts as done" first (goals / not_doing in the model), turn it into
+runnable checks (try / verify), and run them automatically at commit time (hook) and on push (CI).
 
 Python standard library only (openpyxl is optional: xlsx import / spec.xlsx).
 MIT License -- see LICENSE.
@@ -214,6 +220,36 @@ def check(model: dict) -> tuple[list[str], list[str]]:
             bad = [k for k in row if k not in cn_seen]
             if bad:
                 err.append(f"{where}: 샘플 {i}번째 행에 없는 칸 {bad}")
+    # success criteria (harness layer 1): goals = questions the data must answer, not_doing = scope fence
+    goals = model.get("goals")
+    if goals is None:
+        warn.append("성공 기준(goals)이 없습니다 -- '이 데이터로 무엇을 알 수 있어야 하나요?' 를 1~3개, 확인 SQL 과 함께 적어 두세요")
+    elif not isinstance(goals, list):
+        err.append("goals 는 목록이어야 합니다")
+    else:
+        for i, g in enumerate(goals, 1):
+            gw = f"성공 기준 {i}"
+            if not isinstance(g, dict) or not g.get("say") or not g.get("sql"):
+                err.append(f"{gw}: say(한 문장)와 sql(확인 쿼리)이 필요합니다")
+                continue
+            q = g["sql"].strip().rstrip(";").strip()
+            if ";" in q or not re.match(r"(?is)^(select|with)\b", q) or \
+                    re.search(r"(?i)\b(insert|update|delete|drop|alter|create|attach|pragma)\b", q):
+                err.append(f"{gw}: sql 은 조회(SELECT) 한 문장만 -- 데이터를 바꾸는 문장은 쓸 수 없습니다")
+            ex = g.get("expect", "rows")
+            if not (ex == "rows" or (isinstance(ex, int) and not isinstance(ex, bool) and ex >= 0) or isinstance(ex, list)):
+                err.append(f"{gw}: expect 는 생략(1행 이상) · 행 수(숫자) · 기대 결과([[...]]) 중 하나")
+    if goals and not any(t.get("sample") for t in tb):
+        warn.append("성공 기준을 확인하려면 샘플 행(sample)이 필요합니다 -- 확인 쿼리가 볼 데이터를 몇 행 적어 두세요")
+    nd = model.get("not_doing") or []
+    if not isinstance(nd, list):
+        err.append("not_doing 은 목록이어야 합니다 (예: [\"결제\", \"배송 추적\"])")
+    else:
+        for t in tb:
+            for word in nd:
+                w = str(word).strip()
+                if w and (w == t.get("label") or w.lower() == str(t.get("name", "")).lower()):
+                    err.append(f"테이블 {t.get('name')}: '{w}' 는 이번에 만들지 않기로 한 것(not_doing)입니다 -- 범위를 바꾸려면 사용자와 먼저 정하세요")
     # cycles in required refs
     tbm = tables(model)
 
@@ -402,6 +438,13 @@ SPEC_HEAD = ("테이블", "테이블 이름표", "순번", "칸", "칸 이름표
 
 def spec_md(model: dict) -> str:
     out = [f"# {model.get('project', '')} -- 테이블 정의서", "", f"DB: {model.get('db', 'sqlite')}", ""]
+    if model.get("goals") or model.get("not_doing"):
+        out += ["## 성공 기준 -- 이 데이터로 할 수 있어야 하는 것", "",
+                "`datalight.py verify` 가 아래 확인 쿼리를 샘플 데이터로 실제로 돌려 봅니다.", ""]
+        out += [f"{i}. {g.get('say')}  \n   `{g.get('sql')}`" for i, g in enumerate(model.get("goals") or [], 1)]
+        if model.get("not_doing"):
+            out += ["", "**이번에 만들지 않을 것:** " + ", ".join(map(str, model["not_doing"]))]
+        out.append("")
     cur = None
     for r in spec_rows(model):
         if r[0] != cur:
@@ -460,13 +503,45 @@ def _fill(c: dict, n: int):
             "bool": 1, "date": "2026-01-0%d" % min(n, 9), "datetime": "2026-01-01 09:00:00"}.get(ty, f"v{n}")
 
 
-def try_sqlite(model: dict) -> tuple[bool, list[str]]:
-    """create the SQLite schema in memory, insert samples, then check each rule really blocks bad rows"""
+def _norm(v):
+    if isinstance(v, bool):
+        return int(v)
+    if isinstance(v, (int, float)):
+        return float(v)
+    return v
+
+
+def run_goals(con, model: dict) -> tuple[bool, list[str]]:
+    ok, lines = True, []
+    for i, g in enumerate(model.get("goals") or [], 1):
+        label = f"성공 기준 {i} '{g.get('say')}'"
+        try:
+            rows = [list(r) for r in con.execute(g["sql"].strip().rstrip(";")).fetchall()]
+        except sqlite3.Error as e:
+            ok = False
+            lines.append(f"FAIL: {label} -- 쿼리 실패: {e}")
+            continue
+        ex = g.get("expect", "rows")
+        if ex == "rows":
+            good, why = bool(rows), "결과가 없습니다"
+        elif isinstance(ex, int):
+            good, why = len(rows) == ex, f"{ex}행이어야 하는데 {len(rows)}행"
+        else:
+            key = lambda r: json.dumps([_norm(x) for x in r], ensure_ascii=False)  # noqa: E731
+            good = sorted(map(key, rows)) == sorted(map(key, ex))
+            why = f"기대 {ex} / 실제 {rows}"
+        lines.append(f"OK: {label}" if good else f"FAIL: {label} -- {why}")
+        ok &= good
+    return ok, lines
+
+
+def try_sqlite(model: dict, ddl_text: str | None = None) -> tuple[bool, list[str]]:
+    """create the SQLite schema in memory, insert samples, run the goals, then check each rule really blocks bad rows"""
     con = sqlite3.connect(":memory:")
     con.execute("PRAGMA foreign_keys = ON")
     lines, ok = [], True
     try:
-        con.executescript(ddl(model, "sqlite"))
+        con.executescript(ddl_text if ddl_text is not None else ddl(model, "sqlite"))
         lines.append(f"OK: 테이블 {len(model['tables'])}개 만들기")
     except sqlite3.Error as e:
         return False, [f"FAIL: 스키마 만들기 실패 -- {e}"]
@@ -506,6 +581,9 @@ def try_sqlite(model: dict) -> tuple[bool, list[str]]:
             ok = False
             lines.append(f"FAIL: {t['name']} 샘플 넣기 실패 -- {e}")
     con.commit()
+    gok, glines = run_goals(con, model)
+    ok &= gok
+    lines += glines
 
     def expect_block(label, fn):
         nonlocal ok
@@ -533,6 +611,8 @@ def try_sqlite(model: dict) -> tuple[bool, list[str]]:
                 expect_block(f"{n} 음수 금액", lambda c=c: insert(t, {**base, c["name"]: -1}))
             if c["type"] == "ref":
                 expect_block(f"{n} 없는 대상 가리키기", lambda c=c: insert(t, {**base, c["name"]: 987654321}))
+                if c.get("required"):
+                    expect_block(f"{n} 비우기", lambda c=c: insert(t, {**base, c["name"]: None}))
         uq = [c for c in t["columns"] if c.get("unique")]
         for c in uq:
             def dup(c=c):
@@ -557,6 +637,192 @@ def try_sqlite(model: dict) -> tuple[bool, list[str]]:
                                  lambda c=c, rid=rid: con.execute(f"DELETE FROM {c['ref']} WHERE {rid} = ?", (first_ids[c['ref']],)))
     con.close()
     return ok, lines
+
+
+# ----------------------------------------------------------------- verify (harness gate)
+def _mutants(model: dict, base: str):
+    """one planted bug per rule kind, aimed at a column the model says is protected"""
+    def first(pred):
+        for t in ordered(model):
+            for c in t["columns"]:
+                if pred(t, c):
+                    return t["name"], c["name"]
+        return None
+
+    def cut(target, rx_tail, keep_group=False):
+        if not target:
+            return None
+        t, c = target
+        start = base.index(f"CREATE TABLE {t} (")
+        end = base.index("\n);", start)
+        m = re.compile(rf"(\n  {c} \w+(?:\(\d+,\d+\))?[^\n]*?)" + rx_tail).search(base, start, end)
+        if not m:
+            return None
+        return base[:m.start()] + m.group(1) + base[m.end():]
+
+    single_key = lambda t, c: c.get("key") and len(key_columns(t)) == 1  # noqa: E731
+    yield "필수값(NOT NULL) 하나 빼기", cut(first(lambda t, c: c.get("required") and c["type"] not in ("id", "ref")), " NOT NULL")
+    yield "선택값 규칙(CHECK IN) 하나 빼기", cut(first(lambda t, c: c.get("choices")), r" CHECK \(\w+ IN \([^)]*\)\)")
+    yield "금액 음수 금지 하나 빼기", cut(first(lambda t, c: c["type"] == "money"), r" CHECK \(\w+ >= 0\)")
+    yield "중복 금지(UNIQUE) 하나 빼기", cut(first(lambda t, c: c.get("unique") and c["type"] != "id"), " UNIQUE")
+    yield "참조(REFERENCES) 하나 빼기", cut(first(lambda t, c: c["type"] == "ref" and not single_key(t, c)),
+                                       r" REFERENCES \w+ \(\w+\) ON DELETE (?:RESTRICT|CASCADE|SET NULL)")
+
+
+def mutation_check(model: dict) -> list[tuple[str, bool]]:
+    """plant one bug at a time in the SQL and confirm `try` notices (does the safety device really catch?)"""
+    base = ddl(model, "sqlite")
+    out = []
+    for label, broken in _mutants(model, base):
+        if broken is None:
+            continue
+        ok, _ = try_sqlite(model, broken)
+        out.append((label, not ok))
+    return out
+
+
+def stale_outputs(model: dict, out_dir) -> list[str]:
+    """files in data/out that no longer match the model (someone edited the model but did not rebuild)"""
+    out = Path(out_dir)
+    if not out.is_dir():
+        return []
+    want = {"schema.sql": None, "erd.md": erd(model), "spec.md": spec_md(model)}
+    stale = []
+    for name, text in want.items():
+        f = out / name
+        if not f.exists():
+            continue
+        if name == "schema.sql":
+            first = f.read_text(encoding="utf-8").split("\n", 1)[0]
+            db = "postgresql" if "postgresql" in first else "sqlite"
+            text = ddl(model, db)
+        if f.read_text(encoding="utf-8") != text:
+            stale.append(name)
+    return stale
+
+
+def db_drift(model: dict, db_path) -> tuple[list[str], list[str]]:
+    """compare a real SQLite DB with the model. (irreversible, notes)
+    irreversible = tables/columns that hold data in the DB but are gone from the model"""
+    con = sqlite3.connect(f"file:{Path(db_path).as_posix()}?mode=ro", uri=True)
+    bad, notes = [], []
+    try:
+        have = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
+        tb = tables(model)
+        for t in sorted(have):
+            n = con.execute(f'SELECT count(*) FROM "{t}"').fetchone()[0]
+            if t not in tb:
+                (bad if n else notes).append(f"DB 의 {t} 가 정본에서 빠졌습니다 ({n}행)" + (" -- 지우면 되돌릴 수 없습니다" if n else ""))
+                continue
+            cols = [r[1] for r in con.execute(f'PRAGMA table_info("{t}")')]
+            want = {c["name"] for c in all_columns(tb[t])}
+            for c in cols:
+                if c not in want:
+                    filled = con.execute(f'SELECT count(*) FROM "{t}" WHERE "{c}" IS NOT NULL').fetchone()[0]
+                    (bad if filled else notes).append(f"DB 의 {t}.{c} 가 정본에서 빠졌습니다 (값 {filled}개)"
+                                                      + (" -- 지우면 되돌릴 수 없습니다" if filled else ""))
+            for c in sorted(want - set(cols)):
+                notes.append(f"{t}.{c} 는 정본에만 있습니다 (DB 에 아직 반영 전)")
+        for t in sorted(set(tb) - have):
+            notes.append(f"{t} 는 정본에만 있습니다 (DB 에 아직 반영 전)")
+    finally:
+        con.close()
+    return bad, notes
+
+
+def verify(model_path, db_path=None, use_db=True, mutate=False) -> tuple[bool, list[str]]:
+    """the single pass/fail gate. Used by people, by Claude before saying 'done', by the commit hook and by CI"""
+    m = load(model_path)
+    lines, ok = [], True
+    errs, warns = check(m)
+    lines += [f"FAIL: {e}" for e in errs] + [f"참고: {w}" for w in warns]
+    if errs:
+        return False, lines + ["결과: 설계 검사(check) 실패 -- 나머지 검사는 건너뜁니다"]
+    lines.append("OK: 설계 검사")
+    tok, tlines = try_sqlite(m)
+    ok &= tok
+    lines += [l for l in tlines if l.startswith("FAIL") or "성공 기준" in l]
+    if tok:
+        lines.append("OK: 규칙 확인 (나쁜 값이 모두 막힘)")
+    out = Path(model_path).parent / "out"
+    stale = stale_outputs(m, out)
+    if stale:
+        ok = False
+        lines.append(f"FAIL: {out} 의 {', '.join(stale)} 가 정본과 다릅니다 -- `build` 로 다시 만드세요")
+    if use_db:
+        dbp = Path(db_path) if db_path else Path(model_path).parent / "app.db"
+        if dbp.exists():
+            bad, notes = db_drift(m, dbp)
+            ok &= not bad
+            lines += [f"FAIL: {b}" for b in bad] + [f"참고: {n}" for n in notes]
+            if not bad:
+                lines.append(f"OK: {dbp.name} 와 비교 -- 데이터가 사라질 변경 없음")
+    if mutate:
+        res = mutation_check(m)
+        for label, caught in res:
+            lines.append(("OK: 장치 검증 -- " if caught else "FAIL: 장치 검증 -- ") + label + (" → 잡음" if caught else " → 못 잡음 (검사에 구멍)"))
+            ok &= caught
+    lines.append("결과: 통과" if ok else "결과: 실패 -- FAIL 줄을 고친 뒤 다시 verify")
+    return ok, lines
+
+
+HOOK_MARK = "# data-light pre-commit"
+HOOK = HOOK_MARK + """ (datalight.py hook install)
+# 정본(model.light.json)이 바뀐 커밋은 verify 를 통과해야 한다. 급할 때 건너뛰기: git commit --no-verify
+changed=$(git diff --cached --name-only --diff-filter=ACM | grep 'model\\.light\\.json$')
+[ -z "$changed" ] && exit 0
+PY=$(command -v python3 || command -v python || command -v py)
+for m in $changed; do
+  "$PY" .data-light/datalight.py verify "$m" || { echo "data-light: $m 검사 실패 -- 커밋을 멈췄습니다"; exit 1; }
+done
+"""
+CI = """name: data-light verify
+on: [push, pull_request]
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: verify every model.light.json
+        run: |
+          set -e
+          for m in $(git ls-files '*model.light.json'); do python .data-light/datalight.py verify "$m" --no-db; done
+"""
+
+
+def hook_install(repo=".") -> list[str]:
+    repo = Path(repo).resolve()
+    if not (repo / ".git").is_dir():
+        raise SystemExit(f"{repo} 는 git 저장소가 아닙니다 (git init 먼저)")
+    done = []
+    tool = repo / ".data-light" / "datalight.py"
+    tool.parent.mkdir(exist_ok=True)
+    tool.write_bytes(Path(__file__).read_bytes())
+    done.append(".data-light/datalight.py (도구 사본 -- 커밋해 두면 CI 와 다른 사람도 같은 검사)")
+    hook = repo / ".git" / "hooks" / "pre-commit"
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    if hook.exists() and HOOK_MARK not in hook.read_text(encoding="utf-8", errors="replace"):
+        done.append(".git/hooks/pre-commit 이 이미 있어 건드리지 않았습니다 -- 그 안에 이 줄을 더하세요: "
+                    "python .data-light/datalight.py verify data/model.light.json || exit 1")
+    else:
+        hook.write_text("#!/bin/sh\n" + HOOK, encoding="utf-8", newline="\n")
+        hook.chmod(0o755)
+        done.append(".git/hooks/pre-commit (커밋할 때 자동 검사)")
+    wf = repo / ".github" / "workflows" / "data-light.yml"
+    if not wf.exists():
+        wf.parent.mkdir(parents=True, exist_ok=True)
+        wf.write_text(CI, encoding="utf-8", newline="\n")
+        done.append(".github/workflows/data-light.yml (GitHub 에 올릴 때 자동 검사)")
+    gi = repo / ".gitignore"
+    have = gi.read_text(encoding="utf-8").splitlines() if gi.exists() else []
+    add = [x for x in ("data/app.db", "data/backup/", ".env") if x not in have]
+    if add:
+        with open(gi, "a", encoding="utf-8") as f:
+            f.write(("\n" if have and have[-1] else "") + "\n".join(add) + "\n")
+        done.append(".gitignore 에 " + ", ".join(add))
+    return done
 
 
 # ----------------------------------------------------------------- import
@@ -694,6 +960,17 @@ def import_apply(plan: dict, model_path: str, db_path: str, approval: str, appen
     missing = [c["name"] for c in use if c["name"] not in main_cols | pi_cols]
     if missing:
         raise SystemExit(f"{tn} 에 없는 칸: {missing} -- 정본에 칸을 더하는 것은 설계를 고친 뒤에")
+    backup = None
+    if os.path.exists(db_path) and os.path.getsize(db_path):
+        bdir = Path(db_path).parent / "backup"
+        bdir.mkdir(exist_ok=True)
+        backup = bdir / f"{Path(db_path).stem}-{dt.datetime.now().strftime('%Y%m%d-%H%M%S')}.db"
+        src = sqlite3.connect(db_path)
+        dst = sqlite3.connect(backup)
+        with dst:
+            src.backup(dst)
+        src.close()
+        dst.close()
     con = sqlite3.connect(db_path)
     con.execute("PRAGMA foreign_keys = ON")
     exists = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
@@ -727,7 +1004,8 @@ def import_apply(plan: dict, model_path: str, db_path: str, approval: str, appen
             n += 1
     con.close()
     log = {"at": dt.datetime.now().isoformat(timespec="seconds"), "file": plan["file"], "table": tn, "rows": n,
-           "bad_values": bad, "created_table": created, "personal_to": f"pi_{tn}" if pi else None, "approval": approval.strip()}
+           "bad_values": bad, "created_table": created, "personal_to": f"pi_{tn}" if pi else None, "backup": str(backup) if backup else None,
+           "approval": approval.strip()}
     with open(Path(model_path).parent / "import_log.jsonl", "a", encoding="utf-8") as f:
         f.write(json.dumps(log, ensure_ascii=False) + "\n")
     return log
@@ -819,6 +1097,11 @@ def upgrade(model: dict, schema: str = "app", pi_schema: str | None = None) -> d
             "tables": tbl_out, "relationships": rels,
             "pi_suggestions": ["개인정보 칸은 pi_ 테이블에 있음 -- 전문판에서 pi 스키마·암호화(crypto) 적용 검토"],
             "dq_notes": ["light 검사(키·참조·필수·선택값·금액 음수 금지) 통과 상태에서 변환"]}
+    if model.get("goals"):
+        full["success_goals"] = model["goals"]
+        full["dq_notes"].append("성공 기준(success_goals) " + str(len(model["goals"])) + "개 -- 전문판 스모크 테스트로 옮겨 실제 Postgres 에서도 확인")
+    if model.get("not_doing"):
+        full["assumptions"].append("이번 범위 밖(만들지 않음): " + ", ".join(map(str, model["not_doing"])))
     if pi_schema:
         full["pi_schema"] = pi_schema
     return full
@@ -838,6 +1121,10 @@ def main(argv=None) -> int:
     q.add_argument("--sheet"); q.add_argument("--out", default="import_plan.json")
     q = isp.add_parser("apply"); q.add_argument("plan"); q.add_argument("--model", required=True); q.add_argument("--db", required=True)
     q.add_argument("--approval", required=True); q.add_argument("--append", action="store_true")
+    p = sp.add_parser("verify"); p.add_argument("model"); p.add_argument("--db"); p.add_argument("--no-db", action="store_true")
+    p.add_argument("--mutate", action="store_true", help="일부러 규칙을 하나씩 빼 보고 검사가 잡는지 확인")
+    p = sp.add_parser("hook"); hsp = p.add_subparsers(dest="sub", required=True)
+    q = hsp.add_parser("install"); q.add_argument("--repo", default=".")
     p = sp.add_parser("upgrade"); p.add_argument("model"); p.add_argument("--out", default="model.json")
     p.add_argument("--schema", default="app"); p.add_argument("--pi-schema")
     a = ap.parse_args(argv)
@@ -891,6 +1178,15 @@ def main(argv=None) -> int:
             return 0
         log = import_apply(load(a.plan), a.model, a.db, a.approval, a.append)
         print(json.dumps(log, ensure_ascii=False, indent=2))
+        return 0
+    if a.cmd == "verify":
+        ok, lines = verify(a.model, a.db, not a.no_db, a.mutate)
+        print("\n".join(lines))
+        return 0 if ok else 1
+    if a.cmd == "hook":
+        for d in hook_install(a.repo):
+            print("만듦: " + d)
+        print("이제 정본을 고쳐 커밋하면 verify 가 자동으로 돕니다. 시험: 정본에 일부러 오류를 넣고 커밋해 보세요")
         return 0
     if a.cmd == "upgrade":
         full = upgrade(load(a.model), a.schema, a.pi_schema)
