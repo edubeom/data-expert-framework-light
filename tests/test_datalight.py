@@ -6,6 +6,7 @@ import contextlib
 import copy
 import json
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -765,6 +766,141 @@ class V04(unittest.TestCase):
             self.assertIn("member.phone: 개인정보(phone)", issues)
             self.assertNotIn("dish_name: 개인정보", issues)
             self.assertNotIn("hotel: 개인정보", issues)
+
+
+class V041(unittest.TestCase):
+    """0.4.1: third round (V1~V6)"""
+
+    def test_v1_case_patterns_have_open_paren(self):
+        """bash 3.2 (macOS /bin/sh) reads a bare 'pattern)' inside $( ) as the end of the substitution"""
+        lines = [l.strip() for l in dl.HOOK.splitlines()]
+        pats = [l for l in lines if re.match(r"^\(?[^\s()]*[*/][^\s]*\)", l) or l.startswith("case ")]
+        self.assertTrue(pats)
+        for l in lines:
+            if l.startswith("case ") and " in " in l and l.rstrip().endswith("esac"):
+                self.assertIn(" in (", l, l)
+            elif re.match(r"^[^#(\s][^\s]*\) ", l):
+                self.fail("case 패턴에 '(' 가 없습니다: " + l)
+
+    def test_v1_hook_parses_with_every_sh(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "pre-commit"
+            dl._write(f, "#!/bin/sh\n" + dl.HOOK)
+            for sh in ("sh", "dash", "bash", "busybox"):
+                exe = shutil.which(sh)
+                if not exe:
+                    continue
+                args = [exe, "sh", "-n", str(f)] if sh == "busybox" else [exe, "-n", str(f)]
+                if sh == "bash":
+                    args = [exe, "--posix", "-n", str(f)]
+                r = subprocess.run(args, capture_output=True, text=True)
+                self.assertEqual(r.returncode, 0, f"{sh}: {r.stderr}")
+            self.assertEqual(dl._hook_syntax_error(f), "")
+
+    @unittest.skipUnless(shutil.which("git") and shutil.which("sh"), "git/sh 없음")
+    def test_v1_unparsable_hook_is_not_left_behind(self):
+        """if this computer's sh cannot read our block, install must not leave a hook that stops every commit"""
+        with tempfile.TemporaryDirectory() as d:
+            gitrun(d, "init", "-q")
+            old = dl.HOOK
+            try:
+                dl.HOOK = dl.HOOK.replace("(\n  models=", "(\n  case x in x) ;; esac )\n  models=", 1)  # broken on purpose
+                done = dl.hook_install(d, ci=False)
+            finally:
+                dl.HOOK = old
+            self.assertTrue(any("설치하지 않았습니다" in x for x in done), done)
+            self.assertFalse(Path(d, ".git/hooks/pre-commit").exists())
+
+    def test_v2_split_carries_access(self):
+        m = supa(shop())
+        del dl.tables(m)["pi_customer"]["access"]
+        dl.tables(m)["dish"]["columns"].append({"name": "chef_name", "label": "요리사", "type": "text", "personal": "name"})
+        dl.tables(m)["orders"]["access"] = "own"
+        dl.tables(m)["orders"]["columns"].insert(1, {"name": "owner_id", "label": "주문한 계정", "type": "owner"})
+        dl.tables(m)["orders"]["columns"].append({"name": "receiver", "label": "받는 사람", "type": "text", "personal": "name"})
+        dl.split(m)
+        self.assertNotIn("access", dl.tables(m)["pi_dish"])           # read is never copied to personal data
+        self.assertEqual(dl.tables(m)["pi_orders"]["access"], "own")
+        m2 = supa(shop())
+        del dl.tables(m2)["pi_customer"]["access"]
+        dl.tables(m2)["customer"]["columns"].append({"name": "email", "label": "메일", "type": "text", "personal": "email"})
+        dl.split(m2)                                                  # pi_ already existed without access
+        self.assertEqual(dl.tables(m2)["pi_customer"]["access"], "own")
+        dl.tables(m2)["dish"]["access"] = ["read", "own"]
+        dl.tables(m2)["dish"]["columns"].insert(1, {"name": "owner_id", "label": "올린 사람", "type": "owner"})
+        dl.tables(m2)["dish"]["columns"].append({"name": "cook", "label": "요리사", "type": "text", "personal": "name"})
+        dl.split(m2)
+        self.assertEqual(dl.tables(m2)["pi_dish"]["access"], "own")
+
+    def test_v3_read_and_write_lists(self):
+        m = supa(shop())
+        d = dl.tables(m)["dish"]
+        d["columns"].insert(1, {"name": "owner_id", "label": "올린 사람", "type": "owner"})
+        d["access"] = ["read", "own"]                                 # a board: everyone reads, only the writer edits
+        self.assertEqual(dl.check(m)[0], [])
+        sql = dl.ddl(m, "postgresql")
+        self.assertIn("CREATE POLICY dish_read_read ON dish FOR SELECT TO anon, authenticated USING (true);", sql)
+        self.assertIn("CREATE POLICY dish_add_own ON dish FOR INSERT TO authenticated WITH CHECK (owner_id = auth.uid());", sql)
+        self.assertIn("CREATE POLICY dish_delete_own ON dish FOR DELETE TO authenticated USING (owner_id = auth.uid());", sql)
+        self.assertNotIn("dish_read ON dish FOR SELECT", sql.replace("dish_read_read", ""))
+        for bad in (["read", "read"], ["read", "own", "members"], ["read", "admin"], []):
+            d["access"] = bad
+            self.assertTrue(any("access" in e for e in dl.check(m)[0]), bad)
+        d["access"] = ["read", "members"]                             # members still needs closed sign-up
+        self.assertTrue(any("새 가입을 끈" in e for e in dl.check(m)[0]))
+        m["signup"] = "closed"
+        self.assertEqual(dl.check(m)[0], [])
+        dl.tables(m)["pi_customer"]["access"] = ["read", "own"]
+        self.assertTrue(any("개인정보 표는 누구나 읽기" in e for e in dl.check(m)[0]))
+
+    @unittest.skipUnless(os.environ.get("PG_DSN_HOST"), "PG_DSN_HOST 미설정")
+    def test_v3_policies_behave_on_postgres(self):
+        """anon reads the board, a signed-in user edits only own rows"""
+        host, port = os.environ["PG_DSN_HOST"], os.environ.get("PG_DSN_PORT", "5432")
+        q = lambda sql: subprocess.run(["psql", "-h", host, "-p", port, "-U", "postgres", "-v", "ON_ERROR_STOP=1", "-qtA"],  # noqa: E731
+                                       input=sql, capture_output=True, text=True)
+        prep = ("DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public; DROP SCHEMA IF EXISTS auth CASCADE; CREATE SCHEMA auth;"
+                "CREATE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS "
+                "$$ select nullif(current_setting('request.uid', true), '')::uuid $$;"
+                "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='anon') THEN CREATE ROLE anon; END IF;"
+                "IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='authenticated') THEN CREATE ROLE authenticated; END IF; END $$;"
+                "GRANT USAGE ON SCHEMA public, auth TO anon, authenticated; GRANT EXECUTE ON FUNCTION auth.uid() TO anon, authenticated;")
+        self.assertEqual(q(prep).returncode, 0)
+        board = {"format": "data-light/1", "project": "게시판", "db": "postgresql", "signup": "open", "tables": [
+            {"name": "post", "label": "글", "access": ["read", "own"], "columns": [
+                {"name": "post_id", "type": "id"}, {"name": "owner_id", "label": "쓴 사람", "type": "owner"},
+                {"name": "title", "label": "제목", "type": "text", "required": True}]}]}
+        self.assertEqual(dl.check(board)[0], [])
+        r = q(dl.ddl(board, "postgresql") + "GRANT SELECT, INSERT, UPDATE, DELETE ON post TO anon, authenticated;")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        a, b = "00000000-0000-0000-0000-00000000000a", "00000000-0000-0000-0000-00000000000b"
+        script = (f"SET request.uid = '{a}'; SET ROLE authenticated; INSERT INTO post(title) VALUES ('a의 글'); RESET ROLE;"
+                  f"SET request.uid = '{b}'; SET ROLE authenticated; UPDATE post SET title = 'b가 고침'; RESET ROLE;"
+                  "SET request.uid = ''; SET ROLE anon; SELECT title FROM post; RESET ROLE;")
+        r = q(script)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.strip().splitlines()[-1], "a의 글")      # anon can read; b could not edit a's row
+        r = q("SET ROLE anon; INSERT INTO post(owner_id, title) VALUES (gen_random_uuid(), 'x');")
+        self.assertNotEqual(r.returncode, 0)                           # anon cannot write
+
+    def test_v4_table_without_samples_or_required(self):
+        m = shop()
+        m["tables"].append({"name": "notice", "label": "공지", "columns": [
+            {"name": "notice_id", "type": "id"}, {"name": "memo", "label": "메모", "type": "text"}]})
+        ok, lines = dl.try_sqlite(m)
+        self.assertTrue(ok, "\n".join(l for l in lines if l.startswith("FAIL")))
+
+    def test_v5_pi_without_access_is_noted(self):
+        m = supa(shop())
+        del dl.tables(m)["pi_customer"]["access"]
+        self.assertTrue(any("이 개인정보 표에는 없습니다" in w for w in dl.check(m)[1]))
+
+    def test_v6_closed_signup_comment(self):
+        m = shop()
+        m["db"], m["signup"] = "postgresql", "closed"
+        sql = dl.ddl(m, "postgresql")
+        self.assertIn("Allow anonymous sign-ins", sql)
+        self.assertIn("Authentication → Users → Add user", sql)
 
 
 class Cli(unittest.TestCase):

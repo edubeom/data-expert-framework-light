@@ -22,7 +22,9 @@ dev-process-light 규칙 12 **데이터부터**: 표가 이어지거나, 여럿�
 Supabase 로 갈 때 "이 프로젝트는" 의 **누가 쓰나** 답을 정본에 옮긴다:
 - 정해진 사람끼리 → Supabase 에서 **새 가입을 끄고** `"signup": "closed"`, 표에 `"access": "members"` (가입이 켜져 있으면 아무나 가입해 읽으므로 `check` 가 막는다)
 - 아무나 가입 → `"signup": "open"`, 자기 것만 보는 표에 owner 칸(`"type": "owner"`) + `"access": "own"`, 누구나 보는 목록은 `"access": "read"`
-- `pi_` 표는 `read` 금지. 짝 테이블에 owner 가 있으면 `own` 이 짝 테이블을 따라간다
+- `pi_` 표는 `read` 금지. 짝 테이블에 owner 가 있으면 `own` 이 짝 테이블을 따라간다. `split` 이 짝 표의 access 를 옮겨 준다
+- 읽기·쓰기가 다르면 목록: 게시판 `["read", "own"]`(누구나 읽고 자기 글만 쓰기), 공지 `["read", "members"]` -- 손으로 쓰던 `data/supabase-policies.sql` 의 읽기 규칙이 필요 없다
+- 새 가입을 끈 사이트: 익명 로그인도 끄고, 계정은 Authentication → Users → Add user 로 (사이트에 가입 화면을 두지 않는다)
 
 ## 파일 위치와 기록
 ```

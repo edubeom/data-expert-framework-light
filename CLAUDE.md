@@ -20,3 +20,5 @@
 - 2026-10-14 CI 실패 두 가지: ① `Path.write_text(newline=)` 은 Python 3.10+ → 3.9 에서 오류. 파일 쓰기는 `_write()` 로.
   ② Windows 파이프 출력은 cp1252 라 한글이 ???? → 출력은 항상 UTF-8 로 재설정. 시험의 `run()` 은 `PYTHONIOENCODING=cp1252` 로 Windows 를 흉내 낸다.
   고친 뒤에는 최저 지원 버전(3.9)에서도 시험한다: `uv python install 3.9` → `$(uv python find 3.9) tests/test_datalight.py`.
+- 2026-10-15 macOS 에서 커밋 훅이 모든 커밋을 막음(0.4.0): bash 3.2(macOS /bin/sh)는 `$( )` 안의 case 패턴 `)` 를 치환의 끝으로 읽는다.
+  셸 스크립트의 case 패턴은 늘 `(pattern)` 로 쓴다. 훅은 설치 뒤 `sh -n` 으로 확인하고, CI 의 macOS 에서 실제 커밋으로 시험한다.

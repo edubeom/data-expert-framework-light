@@ -6,7 +6,7 @@
       "name": "data-expert-light",
       "source": "./",
       "description": "비전공자·작은 시스템을 위한 쉬운 데이터 설계 (SQLite/Supabase, ERD, 정의서, CSV/엑셀 가져오기)",
-      "version": "0.4.0"
+      "version": "0.4.1"
     }
   ]
 }

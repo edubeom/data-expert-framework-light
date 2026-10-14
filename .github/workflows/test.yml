@@ -7,6 +7,9 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
         python: ["3.9", "3.12"]
+        include:
+          - os: macos-latest      # /bin/sh 가 bash 3.2 -- 커밋 훅이 여기서 실제로 돈다
+            python: "3.12"
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5

@@ -44,10 +44,16 @@ import sys
 from pathlib import Path
 
 FORMAT = "data-light/1"
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 NAME = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 TYPES = ("id", "ref", "text", "long_text", "int", "number", "money", "bool", "date", "datetime", "owner")
 ACCESS = ("members", "own", "read")
+WIDE = {"read": 3, "members": 2, "own": 1}          # who may see: read (anyone) > members (signed in) > own (my rows)
+
+
+def access_list(t: dict) -> list:
+    a = t.get("access")
+    return [] if a is None else ([a] if isinstance(a, str) else list(a))
 RESERVED = {
     "all", "and", "any", "as", "asc", "between", "by", "case", "check", "column", "constraint", "create", "cross",
     "current_date", "current_time", "current_timestamp", "default", "delete", "desc", "distinct", "drop", "else", "end",
@@ -234,22 +240,29 @@ def check(model: dict) -> tuple[list[str], list[str]]:
             err.append(f"{where}: owner 칸은 표마다 하나만")
         acc = t.get("access")
         if acc is not None:
-            if acc not in ACCESS:
-                err.append(f"{where}: access 는 {', '.join(ACCESS)} 중 하나 (members=정해진 사람끼리, own=자기 행만, read=누구나 읽기만)")
+            al = access_list(t) if isinstance(acc, (str, list)) else [None]
+            base_t = next((x for x in tb if x.get("name") == tn[3:]), None) if tn.startswith("pi_") else t
+            if not al or len(al) > 2 or len(set(al)) != len(al) or any(a not in ACCESS for a in al):
+                err.append(f"{where}: access 는 {', '.join(ACCESS)} 중 하나, 또는 읽기·쓰기 두 개의 목록 (예: [\"read\", \"own\"] "
+                           "= 누구나 읽고 쓰기는 자기 것만)")
             elif model.get("db", "sqlite") != "postgresql":
                 warn.append(f"{where}: access 는 PostgreSQL(Supabase) 에서만 쓰입니다 -- 지금 db 는 {model.get('db', 'sqlite')}")
-            elif acc == "members" and model.get("signup") != "closed":
-                err.append(f"{where}: access members(로그인한 사람 모두)는 새 가입을 끈 사이트에서만 안전합니다 -- "
-                           "Supabase 에서 새 가입을 끄고 정본에 \"signup\": \"closed\" 를 적거나, own 을 쓰세요")
-            elif acc == "read" and tn.startswith("pi_"):
-                err.append(f"{where}: 개인정보 표는 누구나 읽기(read)로 열 수 없습니다")
-            elif acc == "own":
-                base_t = next((x for x in tb if x.get("name") == tn[3:]), None) if tn.startswith("pi_") else t
-                if not base_t or not any(c.get("type") == "owner" for c in base_t.get("columns", [])):
+            else:
+                if "members" in al and model.get("signup") != "closed":
+                    err.append(f"{where}: access members(로그인한 사람 모두)는 새 가입을 끈 사이트에서만 안전합니다 -- "
+                               "Supabase 에서 새 가입을 끄고 정본에 \"signup\": \"closed\" 를 적거나, own 을 쓰세요")
+                if "read" in al and tn.startswith("pi_"):
+                    err.append(f"{where}: 개인정보 표는 누구나 읽기(read)로 열 수 없습니다")
+                if "own" in al and (not base_t or not any(c.get("type") == "owner" for c in base_t.get("columns", []))):
                     err.append(f"{where}: access own 은 " + ("짝 테이블에" if tn.startswith("pi_") else "이 표에")
                                + " owner 칸이 있어야 합니다 (예: {\"name\": \"owner_id\", \"label\": \"만든 사람\", \"type\": \"owner\"})")
         elif owners and model.get("db", "sqlite") == "postgresql":
             warn.append(f"{where}: owner 칸이 있는데 access 가 없습니다 -- 자기 행만 보게 하려면 \"access\": \"own\"")
+        if tn.startswith("pi_") and model.get("db", "sqlite") == "postgresql" and t.get("access") is None:
+            bt = next((x for x in tb if x.get("name") == tn[3:]), None)
+            if bt and bt.get("access") is not None:
+                warn.append(f"{where}: 짝 테이블 {tn[3:]} 에는 access 가 있는데 이 개인정보 표에는 없습니다 -- "
+                            "Supabase 에서 아무도 읽을 수 없습니다 (own 또는 members 를 적거나, 일부러 막은 것이면 그대로)")
         if tn.startswith("pi_"):
             base = tn[3:]
             if base not in names:
@@ -350,6 +363,13 @@ def split(model: dict) -> list[str]:
                                "type": "ref", "ref": t["name"], "key": True, "on_delete": "delete"}]}
             model["tables"].insert(model["tables"].index(t) + 1, pt)
             tb[pn] = pt
+        if pt.get("access") is None and t.get("access") is not None:
+            # personal data follows its table, but never opens wider than "own"/"members": read becomes own (if owner) or nothing
+            acc = [a for a in access_list(t) if a != "read"]
+            if not acc and "read" in access_list(t) and any(c.get("type") == "owner" for c in t["columns"]):
+                acc = ["own"]
+            if acc:
+                pt["access"] = min(acc, key=lambda a: WIDE[a])
         for c in pcols:
             t["columns"].remove(c)
             pt["columns"].append(c)
@@ -454,24 +474,42 @@ def ddl(model: dict, db: str | None = None, only: set | None = None) -> str:
     return "\n".join(out) + "\n"
 
 
+def _who(model: dict, t: dict, kind: str) -> tuple[str, str]:
+    """(roles, condition) for one access kind"""
+    if kind == "read":
+        return "anon, authenticated", "true"
+    if kind == "members":
+        return "authenticated", "true"
+    tn = t["name"]
+    own = next((c["name"] for c in t["columns"] if c["type"] == "owner"), None)
+    if own:
+        return "authenticated", f"{own} = auth.uid()"
+    base = tables(model)[tn[3:]]                # pi_ table: owner lives on the paired table
+    bo = next(c["name"] for c in base["columns"] if c["type"] == "owner")
+    k = id_column(model, base["name"])
+    return "authenticated", f"EXISTS (SELECT 1 FROM {base['name']} b WHERE b.{k} = {tn}.{k} AND b.{bo} = auth.uid())"
+
+
 def _policies(model: dict, t: dict) -> list[str]:
-    """real policies from the model's "access" (members / own / read)"""
-    tn, acc = t["name"], t.get("access")
-    if acc == "members":
-        return [f"CREATE POLICY {tn}_members ON {tn} FOR ALL TO authenticated USING (true) WITH CHECK (true);"]
-    if acc == "read":
-        return [f"CREATE POLICY {tn}_read ON {tn} FOR SELECT TO anon, authenticated USING (true);"]
-    if acc == "own":
-        own = next((c["name"] for c in t["columns"] if c["type"] == "owner"), None)
-        if own:
-            cond = f"{own} = auth.uid()"
-        else:                                   # pi_ table: owner lives on the paired table
-            base = tables(model)[tn[3:]]
-            bo = next(c["name"] for c in base["columns"] if c["type"] == "owner")
-            k = id_column(model, base["name"])
-            cond = f"EXISTS (SELECT 1 FROM {base['name']} b WHERE b.{k} = {tn}.{k} AND b.{bo} = auth.uid())"
-        return [f"CREATE POLICY {tn}_own ON {tn} FOR ALL TO authenticated USING ({cond}) WITH CHECK ({cond});"]
-    return []
+    """real policies from the model's "access": one kind (read = select only, members/own = everything),
+    or two kinds = the wider one reads, the narrower one writes (e.g. ["read", "own"]: a board)"""
+    tn, al = t["name"], access_list(t)
+    if not al:
+        return []
+    if len(al) == 1:
+        kind = al[0]
+        roles, cond = _who(model, t, kind)
+        if kind == "read":
+            return [f"CREATE POLICY {tn}_read ON {tn} FOR SELECT TO {roles} USING ({cond});"]
+        return [f"CREATE POLICY {tn}_{kind} ON {tn} FOR ALL TO {roles} USING ({cond}) WITH CHECK ({cond});"]
+    reader, writer = sorted(al, key=lambda a: -WIDE[a])
+    rr, rc = _who(model, t, reader)
+    wr, wc = _who(model, t, writer)
+    return [f"-- {tn}: 읽기 = {reader}, 쓰기 = {writer}",
+            f"CREATE POLICY {tn}_read_{reader} ON {tn} FOR SELECT TO {rr} USING ({rc});",
+            f"CREATE POLICY {tn}_add_{writer} ON {tn} FOR INSERT TO {wr} WITH CHECK ({wc});",
+            f"CREATE POLICY {tn}_edit_{writer} ON {tn} FOR UPDATE TO {wr} USING ({wc}) WITH CHECK ({wc});",
+            f"CREATE POLICY {tn}_delete_{writer} ON {tn} FOR DELETE TO {wr} USING ({wc});"]
 
 
 def rls_sql(model: dict, only=None) -> list[str]:
@@ -486,7 +524,9 @@ def rls_sql(model: dict, only=None) -> list[str]:
            "-- 사이트 코드에는 공개용 키만. service_role · sb_secret_ 키는 절대 넣지 않습니다. 적용 뒤 Supabase 의 Security Advisor 를 확인하세요.",
            "-- (일반 PostgreSQL 에서는 표 주인 계정에는 RLS 가 적용되지 않아 동작이 바뀌지 않습니다.)"]
     if model.get("signup") == "closed":
-        out.append("-- 이 사이트는 새 가입을 끈 것으로 정했습니다(signup: closed). Supabase 의 가입 설정이 꺼져 있는지 확인하세요.")
+        out += ["-- 이 사이트는 새 가입을 끈 것으로 정했습니다(signup: closed). Supabase 의 Authentication 설정에서",
+                "--   · 새 가입(Allow new users to sign up)을 끄고, · 익명 로그인(Allow anonymous sign-ins)도 끕니다 (익명 사용자도 로그인한 사람으로 칩니다).",
+                "--   · 계정은 Authentication → Users → Add user 로 만들어 줍니다. 사이트에는 가입 화면을 두지 않습니다."]
     for t in ordered(model):
         tn = t["name"]
         if only is not None and tn not in only:
@@ -676,6 +716,8 @@ def try_sqlite(model: dict, ddl_text: str | None = None) -> tuple[bool, list[str
 
     def insert(t, row):
         cols = list(row)
+        if not cols:                                    # nothing required and no sample: let defaults fill the row
+            return con.execute(f"INSERT INTO {t['name']} DEFAULT VALUES").lastrowid
         cur = con.execute(f"INSERT INTO {t['name']} ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
                           [int(v) if isinstance(v, bool) else v for v in row.values()])
         return cur.lastrowid
@@ -929,11 +971,12 @@ HOOK = HOOK_MARK + """ (datalight.py hook install)
 # (괄호 안에서만 끝내므로 이 아래에 다른 훅 내용이 있어도 그대로 돕니다)
 (
   models=$(git -c core.quotepath=false diff --cached --name-only --diff-filter=ACMR | while IFS= read -r f; do
-    case "$f" in .claude/skills/*|.agents/skills/*) continue ;; esac   # 설치된 스킬의 예제는 검사하지 않음
+    # 패턴 앞의 "(" 는 꼭 둔다 -- macOS 의 /bin/sh(bash 3.2)는 $( ) 안의 case 패턴 ")" 를 치환의 끝으로 읽는다
+    case "$f" in (.claude/skills/*|.agents/skills/*) continue ;; esac   # 설치된 스킬의 예제는 검사하지 않음
     case "$f" in
-      *model.light.json) printf '%s\\n' "$f" ;;
-      */out/*) d=${f%/out/*}; [ -f "$d/model.light.json" ] && printf '%s\\n' "$d/model.light.json" ;;
-      out/*) [ -f model.light.json ] && printf '%s\\n' model.light.json ;;
+      (*model.light.json) printf '%s\\n' "$f" ;;
+      (*/out/*) d=${f%/out/*}; [ -f "$d/model.light.json" ] && printf '%s\\n' "$d/model.light.json" ;;
+      (out/*) [ -f model.light.json ] && printf '%s\\n' model.light.json ;;
     esac
   done | sort -u)
   [ -z "$models" ] && exit 0
@@ -989,6 +1032,21 @@ def _hooks_dir(repo: Path) -> tuple[Path, str]:
 
 def _hook_label(repo: Path, shown: str) -> str:
     return f"{shown}/pre-commit" + (" (git 설정 core.hooksPath)" if _git(repo, "config", "--get", "core.hooksPath") else "")
+
+
+def _hook_syntax_error(hook: Path) -> str:
+    """'' if the system sh can parse the hook (or no sh to ask), else the error text"""
+    import shutil
+    import subprocess
+    sh = shutil.which("sh")
+    if not sh:
+        return ""
+    try:
+        r = subprocess.run([sh, "-n", str(hook)], capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return "" if r.returncode == 0 else (r.stderr.strip().splitlines() or ["sh -n 실패"])[-1]
 
 
 def _settings(repo: Path) -> dict:
@@ -1063,6 +1121,18 @@ def hook_install(repo=".", ci=None, append=False) -> list[str]:
         hook.chmod(0o755)
     except OSError:
         pass
+    bad = _hook_syntax_error(hook)
+    if bad:                                    # never leave a hook that stops every commit
+        text = hook.read_text(encoding="utf-8", errors="replace")
+        i = text.find(HOOK_MARK)
+        j = text.find(HOOK_END, i)
+        rest = text[:i] + (text[j + len(HOOK_END):].lstrip("\n") if j >= 0 else "")
+        if rest.strip() in ("", "#!/bin/sh"):
+            hook.unlink()
+        else:
+            _write(hook, rest)
+        done.append(f"주의: 이 컴퓨터의 sh 가 훅을 읽지 못해 설치하지 않았습니다 ({bad}) -- 커밋은 막지 않습니다. "
+                    "verify 는 손으로 돌리고, data-expert-framework-light 저장소에 알려 주세요")
     wf = repo / ".github" / "workflows" / "data-light.yml"
     if not ci:
         done.append("CI 파일은 만들지 않음 (--no-ci 를 기억해 두었습니다. 다시 켜려면 `hook install --ci`)")

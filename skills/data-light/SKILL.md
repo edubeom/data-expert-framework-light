@@ -57,6 +57,8 @@ description: 비전공자·작은 시스템을 위한 쉬운 데이터 설계. "
   정해진 사람끼리 → `"signup": "closed"` + 표에 `"access": "members"` (Supabase 에서 **새 가입을 꺼야** 안전 -- 안 끄면 `check` 가 막는다),
   아무나 가입 → `"signup": "open"` + 자기 것만 보는 표에 owner 칸(`{"name": "owner_id", "label": "만든 사람", "type": "owner"}`) + `"access": "own"`,
   누구나 보는 목록 → `"access": "read"` (`pi_` 표에는 금지).
+  읽기와 쓰기가 다르면 두 개 목록 — 넓은 쪽이 읽기, 좁은 쪽이 쓰기: 게시판 `["read", "own"]`, 공지 `["read", "members"]`.
+  `split` 은 짝 표의 access 를 `pi_` 표로 옮긴다(누구나 읽기는 옮기지 않음). 새 가입을 끈 사이트는 **익명 로그인도 끄고**, 계정은 Supabase 의 Authentication → Users → Add user 로 만든다(사이트에 가입 화면 없음).
 - 일부러 정본에 넣지 않는 표(데이터가 든 기록 표 등)는 `"outside": ["log"]` -- `verify` 의 데이터 보호 검사에서 빠진다.
 - **성공 기준(`goals`)** — 1번 답을 한 문장(`say`) + 확인 쿼리(`sql`) + 샘플로 나와야 할 결과(`expect`)로. **설계보다 먼저** 쓴다.
 - **만들지 않을 것(`not_doing`)** — 범위 밖. 그 이름의 테이블이 생기면 `check` 가 막는다.

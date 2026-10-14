@@ -44,7 +44,7 @@
 | `columns` | ✔ | 칸 목록 |
 | `sample` | | 확인용 샘플 행 `[{칸: 값}]` — `try` 가 넣어 본다 |
 | `timestamps` | | 기본 true → `created_at`·`updated_at` 자동 추가. 끄려면 false |
-| `access` | | (Supabase) 이 표를 누가 쓰나: `members` 로그인한 사람 모두(새 가입을 끈 사이트만) · `own` 자기 행만(owner 칸 필요, `pi_` 는 짝 테이블의 owner 를 따름) · `read` 누구나 읽기만(`pi_` 금지). 없으면 규칙 없음 = 공개용 키로 못 씀 |
+| `access` | | (Supabase) 이 표를 누가 쓰나: `members` 로그인한 사람 모두(새 가입을 끈 사이트만) · `own` 자기 행만(owner 칸 필요, `pi_` 는 짝 테이블의 owner 를 따름) · `read` 누구나 읽기만(`pi_` 금지). 없으면 규칙 없음 = 공개용 키로 못 씀. **두 개 목록이면 넓은 쪽이 읽기, 좁은 쪽이 쓰기**: `["read", "own"]` 게시판(누구나 읽고, 쓰기·고치기·지우기는 자기 글만), `["read", "members"]` 공지(누구나 읽고 회원이 씀), `["members", "own"]` 회원끼리 보고 자기 것만 고침. `split` 은 짝 표의 access 를 `pi_` 로 옮긴다(read 는 빼고, owner 가 있으면 own) |
 | `unique` | | 두 칸 이상을 묶은 중복 금지 `[["member_id", "dues_month"]]` → `UNIQUE (member_id, dues_month)`. 칸 하나면 그 칸에 `"unique": true` |
 
 ## 칸
@@ -101,4 +101,6 @@ ref → fk(on_delete RESTRICT/CASCADE/SET NULL) + relationships, personal → `p
 ## PostgreSQL(Supabase) 로 만들 때
 `build --db postgresql` 은 모든 표에 `ENABLE ROW LEVEL SECURITY` 를 넣고, 표의 `access` 대로 실제 규칙(policy)을 만든다.
 `access` 가 없는 표는 규칙 없이 틀만 주석으로 단다(정해진 사람끼리는 "새 가입을 끈 경우에만" 이 붙음). 규칙이 없으면 공개용 키로 아무것도 읽을 수 없다.
+짝 표에는 access 가 있는데 `pi_` 표에 없으면 `check` 가 "참고"로 알린다 (Supabase 에서 아무도 못 읽음).
+`signup: closed` 면 SQL 머리에 Supabase 설정 안내가 붙는다: 새 가입 끄기 · 익명 로그인 끄기 · 계정은 Authentication → Users → Add user.
 틀은 `out/schema.sql` 을 고치지 말고 SQL 편집기에서 실행하고, 실행한 것은 `data/supabase-policies.sql` 에 적어 둔다.
