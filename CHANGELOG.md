@@ -3,6 +3,7 @@
 ## 0.4.1 — 2026-10-15 · dev-process-light 0.10 3차 요청 (V1~V6)
 - **V1 급함: macOS 에서 커밋 훅이 모든 커밋을 막던 문제** — 0.4.0 훅의 `$( … case … )` 를 macOS `/bin/sh`(bash 3.2)가 못 읽음.
   case 패턴 앞에 `(` (POSIX), `hook install` 이 설치 뒤 `sh -n` 으로 확인해 못 읽으면 우리 블록을 빼고 알림(커밋을 막는 훅을 남기지 않음), CI 에 macOS 추가
+  Windows 에서 `bash` 가 WSL 이어도 `sh -n` 확인이 잘못 실패하지 않게(파일 이름 + cwd, 진짜 문법 오류만 실패로)
 - V2 `split` 이 짝 표의 `access` 를 `pi_` 로 옮김 (read 는 옮기지 않고, owner 가 있으면 own)
 - V3 `access` 두 개 목록 — 넓은 쪽 읽기 + 좁은 쪽 쓰기 (`["read", "own"]` 게시판, `["read", "members"]` 공지): SELECT 와 INSERT·UPDATE·DELETE 규칙을 따로 만듦
 - V4 샘플도 필수 칸도 없는 표의 `try`/`verify` 오류 → `INSERT … DEFAULT VALUES`

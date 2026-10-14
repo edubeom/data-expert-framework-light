@@ -1041,12 +1041,15 @@ def _hook_syntax_error(hook: Path) -> str:
     sh = shutil.which("sh")
     if not sh:
         return ""
-    try:
-        r = subprocess.run([sh, "-n", str(hook)], capture_output=True, text=True, encoding="utf-8", errors="replace",
-                           timeout=20)
+    try:   # file name + cwd, never a Windows path: WSL's bash turns C:\\Users\\... into C:Users...
+        r = subprocess.run([sh, "-n", hook.name], cwd=str(hook.parent), capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=20)
     except (OSError, subprocess.SubprocessError):
         return ""
-    return "" if r.returncode == 0 else (r.stderr.strip().splitlines() or ["sh -n 실패"])[-1]
+    err = r.stderr.strip()
+    if r.returncode == 0 or "syntax" not in err.lower():   # only a real parse error counts; "cannot run sh" is not one
+        return ""
+    return (err.splitlines() or ["sh -n 실패"])[-1]
 
 
 def _settings(repo: Path) -> dict:

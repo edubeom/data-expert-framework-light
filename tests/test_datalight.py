@@ -790,10 +790,13 @@ class V041(unittest.TestCase):
                 exe = shutil.which(sh)
                 if not exe:
                     continue
-                args = [exe, "sh", "-n", str(f)] if sh == "busybox" else [exe, "-n", str(f)]
+                # file name + cwd: on Windows "bash" may be WSL, which cannot read C:\\... paths
+                args = [exe, "sh", "-n", f.name] if sh == "busybox" else [exe, "-n", f.name]
                 if sh == "bash":
-                    args = [exe, "--posix", "-n", str(f)]
-                r = subprocess.run(args, capture_output=True, text=True)
+                    args = [exe, "--posix", "-n", f.name]
+                r = subprocess.run(args, capture_output=True, text=True, cwd=d)
+                if r.returncode == 127 or "No such file" in r.stderr:      # a shell that cannot see this folder
+                    continue
                 self.assertEqual(r.returncode, 0, f"{sh}: {r.stderr}")
             self.assertEqual(dl._hook_syntax_error(f), "")
 
