@@ -44,7 +44,7 @@ import sys
 from pathlib import Path
 
 FORMAT = "data-light/1"
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 NAME = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 TYPES = ("id", "ref", "text", "long_text", "int", "number", "money", "bool", "date", "datetime", "owner")
 ACCESS = ("members", "own", "read")
@@ -1684,6 +1684,24 @@ def upgrade(model: dict, schema: str = "app", pi_schema: str | None = None) -> d
 
 
 # ----------------------------------------------------------------- cli
+VIEWER_DIR = Path(__file__).resolve().parents[1] / "viewer"
+
+
+def view(model: str, *, port: int = 8820, open_browser: bool = True, watch: bool = True) -> int:
+    """웹 ERD 뷰어(전문판 dataviewer 의 MIT 사본, skills/data-light/viewer)로 정본을 그린다. 옮긴 위치만 정본 옆 *.layout.json 에."""
+    if not (VIEWER_DIR / "dataviewer" / "server.py").is_file():
+        print("뷰어 사본이 없습니다 (skills/data-light/viewer) -- 정의서 그림은 data/out/erd.md 를 보세요")
+        return 1
+    if not Path(model).is_file():
+        print(f"정본이 없습니다: {model}")
+        return 1
+    if str(VIEWER_DIR) not in sys.path:
+        sys.path.insert(0, str(VIEWER_DIR))
+    from dataviewer.__main__ import main as viewer_main  # noqa: E402 -- 표준 라이브러리만 쓰는 사본
+    args = [model, "--port", str(port)] + ([] if open_browser else ["--no-open"]) + ([] if watch else ["--no-watch"])
+    return viewer_main(args)
+
+
 def main(argv=None) -> int:
     _utf8_stdio()
     ap = argparse.ArgumentParser(prog="datalight", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -1710,11 +1728,16 @@ def main(argv=None) -> int:
     g.add_argument("--ci", dest="ci", action="store_true")
     q.add_argument("--append", action="store_true", help="이미 있는 pre-commit 끝에 덧붙임")
     q = hsp.add_parser("status"); q.add_argument("--repo", default=".")
+    p = sp.add_parser("view", help="웹 ERD 그림을 브라우저로 (보기 전용, 정본을 고치면 곧바로 다시 그림)")
+    p.add_argument("model", nargs="?", default="data/model.light.json"); p.add_argument("--port", type=int, default=8820)
+    p.add_argument("--no-open", action="store_true"); p.add_argument("--no-watch", action="store_true")
     p = sp.add_parser("upgrade"); p.add_argument("model"); p.add_argument("--out", default="model.json")
     p.add_argument("--schema", default="app"); p.add_argument("--pi-schema")
     p.add_argument("--facts", help="전문판 질문 대장(data/facts.json)으로 만드는 것(product)도 옮긴다")
     a = ap.parse_args(argv)
 
+    if a.cmd == "view":
+        return view(a.model, port=a.port, open_browser=not a.no_open, watch=not a.no_watch)
     if a.cmd == "check":
         errs, warns = check(load(a.model))
         for w in warns:

@@ -1,5 +1,12 @@
 # 변경 기록
 
+## 0.6.0 — 2026-10-17 · 웹 ERD 뷰어 (`view`)
+- `datalight.py view [data/model.light.json]` — 정본을 브라우저 ERD 로 (보기 전용). 표를 끌어 옮기면 위치만 `model.light.json.layout.json` 에,
+  테마 5가지·보기 단계(표만·키·칸·자료형)·선택한 표만/이웃까지·SVG/PNG, 정본을 고치면 1초 안에 다시 그림. 이 컴퓨터(127.0.0.1)에서만 열림
+- 뷰어는 전문판 data-expert-framework 의 `runtime/viewer/dataviewer` 를 커밋 그대로 담은 사본 (`skills/data-light/viewer`, 저작권자 결정으로 MIT 공개,
+  `viewer.lock.json` 에 커밋·지문). 표준 라이브러리만 — 새 필수 패키지 없음. 관리자는 `tools/update_viewer.py` 로만 바꾼다 (`--check` 를 시험이 본다)
+- 사용자에게 보여 줄 그림: 표가 많으면 erd.md 대신 `view`
+
 ## 0.5.0 — 2026-10-17 · 전문판 0.6.0 (FW-01) 부분집합 — 만드는 것(product)
 - 정본 `product`: `kinds`(design 설계까지 · load 파일 넣기 · manage 데이터 관리 · analyze 분석, 여러 개) · `main`(여럿이면 주 목적) ·
   `said`(**사용자 말 그대로** -- 짐작한 것은 적지 않는다, 전문판 FW-06 의 부분집합). 전문판 `data.product_type`·`data.product_primary` 의 부분집합

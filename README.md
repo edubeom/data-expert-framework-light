@@ -41,6 +41,7 @@ Claude 에게 그냥 말하세요.
 |---|---|
 | `model.light.json` | 설계 원본 — 이것만 고치면 나머지는 다시 만들어집니다 |
 | `out/erd.md` | 표 사이 관계 그림 (GitHub·VS Code 에서 바로 보임) |
+| `datalight.py view` | 같은 그림을 브라우저에서 -- 표를 끌어 옮기고 테마·보기 단계(표만·키·칸·자료형)·선택한 표만, 정본을 고치면 곧바로 다시 그림 (`skills/data-light/viewer`, MIT) |
 | `out/schema.sql` | DB 를 만드는 SQL (SQLite 또는 PostgreSQL·Supabase) |
 | `out/spec.md`, `out/spec.xlsx` | 테이블 정의서 |
 | `app.db` | SQLite 를 쓸 때의 데이터 파일 |

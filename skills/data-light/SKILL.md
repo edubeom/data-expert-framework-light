@@ -15,6 +15,7 @@ description: 비전공자·작은 시스템을 위한 쉬운 데이터 설계. "
 | `check <model>` | 설계 검사 (키·참조·필수·선택값·이름·개인정보 위치) |
 | `split <model> --write` | 개인정보 칸을 `pi_<테이블>` 로 옮김 |
 | `build <model> [--db postgresql]` | `data/out/` 에 schema.sql · erd.md · spec.md (+spec.xlsx) |
+| `view [<model>]` | 웹 ERD 그림을 브라우저로 (보기 전용) -- 표를 끌어 옮기고(위치는 `model.light.json.layout.json`), 테마·보기 단계·선택한 표만, 정본을 고치면 곧바로 다시 그림 |
 | `try <model>` | SQLite 에서 실제로 만들고 샘플을 넣고, 규칙이 나쁜 값을 막는지 확인 |
 | `import plan <csv/xlsx> --table 이름` → `import apply …` | 파일을 테이블로 (사용자 확인 후) |
 | `import schema data/app.db` | 이미 있는 SQLite DB 에서 정본 초안 (이름표는 비어 있음) |
@@ -67,7 +68,7 @@ description: 비전공자·작은 시스템을 위한 쉬운 데이터 설계. "
 - **만들지 않을 것(`not_doing`)** — 범위 밖. 그 이름의 테이블이 생기면 `check` 가 막는다.
 
 ### 3. 확인 — 사용자에게 보여 주기
-`build` → `verify` 를 돌리고(통과할 때까지 Claude 가 고치며 반복), **사용자에게는 ERD 그림(erd.md 의 Mermaid)·성공 기준 결과·표 하나**로 보여 준다:
+`build` → `verify` 를 돌리고(통과할 때까지 Claude 가 고치며 반복), **사용자에게는 ERD 그림(erd.md 의 Mermaid, 표가 많으면 `view` 의 웹 그림)·성공 기준 결과·표 하나**로 보여 준다:
 "손님 한 명이 주문을 여러 번 할 수 있고, 주문 하나에 반찬이 여러 개 담깁니다. 맞나요?"
 기술 용어(PK·FK·정규화)는 쓰지 않거나, 쓰면 바로 풀어 쓴다 (예: "다른 표를 가리키는 칸").
 FAIL 은 Claude 가 고치고 다시 돌린다. 사용자에게 고치라고 하지 않는다.

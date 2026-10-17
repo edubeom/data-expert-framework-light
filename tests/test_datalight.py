@@ -1044,5 +1044,43 @@ class Cli(unittest.TestCase):
             self.assertEqual(json.loads((Path(d) / "model.json").read_text(encoding="utf-8"))["db"], "postgresql")
 
 
+
+class V06(unittest.TestCase):
+    """0.6.0 -- 웹 ERD 뷰어 사본 (전문판 dataviewer, MIT) 과 view 명령."""
+
+    def test_viewer_copy_matches_lock(self):
+        sys.path.insert(0, str(ROOT / "tools"))
+        import update_viewer
+        self.assertEqual(update_viewer.check(), [])
+
+    def test_viewer_draws_light_model(self):
+        import urllib.request
+        sys.path.insert(0, str(dl.VIEWER_DIR))
+        from dataviewer.server import Viewer, serve_in_thread
+        with tempfile.TemporaryDirectory() as d:
+            m = Path(d) / "model.light.json"
+            shutil.copy(SHOP, m)
+            v = Viewer([m])
+            srv, url = serve_in_thread(v)
+            try:
+                with urllib.request.urlopen(url + "api/model", timeout=5) as r:
+                    data = json.loads(r.read().decode("utf-8"))
+                with urllib.request.urlopen(url, timeout=5) as r:
+                    page = r.read().decode("utf-8")
+            finally:
+                v.stop(); srv.shutdown(); srv.server_close()
+            src = data["sources"][0]
+            self.assertEqual(src["kind"], "light")
+            self.assertEqual({t["name"] for t in src["tables"]}, {t["name"] for t in shop()["tables"]})
+            self.assertTrue(src["relations"])
+            self.assertIn("ERD", page)
+
+    def test_view_command_needs_model(self):
+        with tempfile.TemporaryDirectory() as d:
+            r = run("view", "data/model.light.json", "--no-open", cwd=d)
+            self.assertEqual(r.returncode, 1)
+            self.assertIn("정본이 없습니다", r.stdout)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)
