@@ -996,6 +996,13 @@ class PathFix(unittest.TestCase):
             os.symlink(shared, real / "inbox")                                     # 프로젝트 안의 링크 폴더는 이름 그대로
             with cwd(real):
                 self.assertEqual(dl._project_path(str(real / "inbox" / "a.csv")), ("inbox/a.csv", True))
+            priv = Path(d) / "private"                                            # macOS: 임시 폴더 자체가 /var -> /private/var 링크 아래
+            (priv / "proj").mkdir(parents=True)
+            os.symlink(priv, Path(d) / "var")
+            os.symlink(shared, priv / "proj" / "inbox")
+            with cwd(Path(d) / "var" / "proj"):
+                self.assertEqual(dl._project_path(str(Path(d) / "var" / "proj" / "inbox" / "a.csv")), ("inbox/a.csv", True))
+                self.assertEqual(dl._project_path(str(shared / "b.csv")), ("b.csv", False))
 
 
 class Cli(unittest.TestCase):

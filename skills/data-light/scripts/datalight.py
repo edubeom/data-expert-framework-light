@@ -1284,15 +1284,20 @@ def _project_path(path: str) -> tuple[str, bool]:
     returns (path_to_store, inside_project)"""
     # realpath on both sides: macOS temp folders are /var -> /private/var symlinks and Windows may give
     # 8.3 short names (RUNNER~1) for one side only -- without this the path looked "outside" and lost its folder
-    ab = os.path.abspath(path)
-    for here, there in ((ab, os.getcwd()), (os.path.realpath(path), os.path.realpath(os.getcwd()))):
-        try:
-            rel = os.path.relpath(here, there)
-        except ValueError:                     # another drive on Windows
-            continue
-        if not rel.startswith(".."):           # as written first (keeps a linked folder's name), then the real path
-            return Path(rel).as_posix(), True
-    return Path(ab).name, False
+    ab = Path(os.path.abspath(path))
+    home = os.path.normcase(os.path.realpath(os.getcwd()))
+    # the nearest folder of the path (as written) that IS the project folder once resolved -- so a link folder inside the
+    # project keeps its name, and /var vs /private/var (macOS) or RUNNER~1 vs runneradmin (Windows) still match
+    for anc in ab.parents:
+        if os.path.normcase(os.path.realpath(anc)) == home:
+            return ab.relative_to(anc).as_posix(), True
+    try:
+        rel = os.path.relpath(os.path.realpath(ab), home)
+    except ValueError:                         # another drive on Windows
+        return ab.name, False
+    if rel.startswith(".."):
+        return ab.name, False
+    return Path(rel).as_posix(), True
 
 
 def import_plan(path: str, table: str, label: str | None = None, sheet=None) -> dict:
