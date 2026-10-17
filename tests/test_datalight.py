@@ -930,7 +930,9 @@ class V05(unittest.TestCase):
         for bad, msg in ((["manage"], "모양"), ({"kinds": ["crud"], "said": "x"}, "product.kinds"),
                          ({"kinds": ["manage", "analyze"], "said": "x"}, "product.main"),
                          ({"kinds": ["manage"], "main": "analyze", "said": "x"}, "kinds 중 하나"),
-                         ({"kinds": ["manage"], "said": " "}, "product.said")):
+                         ({"kinds": ["manage"], "said": " "}, "product.said"), ({"kinds": [["design"]], "said": "x"}, "product.kinds"),
+                         ({"kinds": ["manage"], "said": 123}, "product.said"), ({"kinds": ["manage"], "said": "x", "main_said": [" "]}, "product.main_said"),
+                         ({"kinds": ["manage", "analyze"], "main": {"x": 1}, "said": "x"}, "product.main")):
             m = shop()
             m["product"] = bad
             errs, _ = dl.check(m)
@@ -955,14 +957,19 @@ class V05(unittest.TestCase):
         pt, pp = fx["facts"]["data.product_type"], fx["facts"]["data.product_primary"]
         self.assertEqual(pt["value"], ["data_management", "analytics_bi"])
         self.assertEqual((pt["source"], pt["quote"]), ("user", m["product"]["said"]))
-        self.assertEqual((pp["value"], pp["derived_from"]), ("data_management", ["data.product_type@1"]))
+        self.assertEqual((pp["value"], pp["derived_from"], pp["quote"]), ("data_management", ["data.product_type@1"], m["product"]["main_said"]))
+        m2 = shop()
+        del m2["product"]["main_said"]
+        self.assertNotIn("data.product_primary", dl.upgrade_facts(m2)["facts"])   # 주 목적을 사용자가 말하지 않았으면 옮기지 않는다
         del m["product"]
         self.assertIsNone(dl.upgrade_facts(m))
         with tempfile.TemporaryDirectory() as d:
             r = run("upgrade", SHOP, "--out", Path(d) / "model.json", "--facts", Path(d) / "facts.json")
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             self.assertIn("data.product_type@1", r.stdout)
+            (Path(d) / "model.json").unlink()
             self.assertEqual(run("upgrade", SHOP, "--out", Path(d) / "model.json", "--facts", Path(d) / "facts.json").returncode, 1)
+            self.assertFalse((Path(d) / "model.json").exists())                   # 대장이 있으면 아무것도 만들지 않는다
             scripts = os.environ.get("DEF_SCRIPTS")
             if scripts:                                                            # 전문판 facts.py 가 같은 판정을 내는지
                 r = subprocess.run([sys.executable, str(Path(scripts) / "facts.py"), "product", "--facts", str(Path(d) / "facts.json"),
@@ -984,6 +991,11 @@ class PathFix(unittest.TestCase):
                 self.assertEqual(dl._project_path(str(link / "data" / "backup" / "x.db")), ("data/backup/x.db", True))
             with cwd(link):
                 self.assertEqual(dl._project_path(str(real / "data" / "x.csv")), ("data/x.csv", True))
+            shared = Path(d) / "shared"
+            shared.mkdir()
+            os.symlink(shared, real / "inbox")                                     # 프로젝트 안의 링크 폴더는 이름 그대로
+            with cwd(real):
+                self.assertEqual(dl._project_path(str(real / "inbox" / "a.csv")), ("inbox/a.csv", True))
 
 
 class Cli(unittest.TestCase):

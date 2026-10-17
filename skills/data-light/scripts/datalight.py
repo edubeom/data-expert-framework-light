@@ -358,15 +358,21 @@ def product_errors(model: dict) -> list[str]:
         return ["product 는 {\"kinds\": [...], \"main\": ..., \"said\": \"사용자 말 그대로\"} 모양입니다"]
     err = []
     kinds = p.get("kinds")
-    if not isinstance(kinds, list) or not kinds or any(k not in PRODUCT_KINDS for k in kinds) or len(set(kinds)) != len(kinds):
+    if not isinstance(kinds, list) or not kinds or not all(isinstance(k, str) for k in kinds) \
+            or any(k not in PRODUCT_KINDS for k in kinds) or len(set(kinds)) != len(kinds):
         err.append(f"product.kinds 는 {list(PRODUCT_KINDS)} 중에서 하나 이상 (겹치지 않게)")
         kinds = []
-    if len(kinds) > 1 and p.get("main") not in kinds:
+    main = p.get("main")
+    if main is not None and not isinstance(main, str):
+        err.append("product.main 은 kinds 중 하나(글자)입니다")
+    elif len(kinds) > 1 and main not in kinds:
         err.append("product.main -- 여러 개면 그중 주 목적 하나를 적습니다 (사용자에게 묻습니다)")
-    if p.get("main") is not None and kinds and p.get("main") not in kinds:
+    elif main is not None and kinds and main not in kinds:
         err.append("product.main 은 kinds 중 하나입니다")
-    if not str(p.get("said") or "").strip():
-        err.append("product.said -- 사용자가 한 말을 그대로 적습니다 (Claude 가 짐작한 것은 적지 않습니다)")
+    for key in ("said", "main_said"):
+        v = p.get(key)
+        if (key == "said" or v is not None) and not (isinstance(v, str) and v.strip()):
+            err.append(f"product.{key} -- 사용자가 한 말을 그대로 적습니다 (글자, Claude 가 짐작한 것은 적지 않습니다)")
     return err
 
 
@@ -1278,14 +1284,15 @@ def _project_path(path: str) -> tuple[str, bool]:
     returns (path_to_store, inside_project)"""
     # realpath on both sides: macOS temp folders are /var -> /private/var symlinks and Windows may give
     # 8.3 short names (RUNNER~1) for one side only -- without this the path looked "outside" and lost its folder
-    ab = os.path.realpath(path)
-    try:
-        rel = os.path.relpath(ab, os.path.realpath(os.getcwd()))
-    except ValueError:                         # another drive on Windows
-        return Path(ab).name, False
-    if rel.startswith(".."):
-        return Path(ab).name, False
-    return Path(rel).as_posix(), True
+    ab = os.path.abspath(path)
+    for here, there in ((ab, os.getcwd()), (os.path.realpath(path), os.path.realpath(os.getcwd()))):
+        try:
+            rel = os.path.relpath(here, there)
+        except ValueError:                     # another drive on Windows
+            continue
+        if not rel.startswith(".."):           # as written first (keeps a linked folder's name), then the real path
+            return Path(rel).as_posix(), True
+    return Path(ab).name, False
 
 
 def import_plan(path: str, table: str, label: str | None = None, sheet=None) -> dict:
@@ -1565,9 +1572,10 @@ def upgrade_facts(model: dict) -> dict | None:
     said = str(p["said"]).strip()
     base = {"source": "user", "quote": said, "asked_by": "data", "stage": "data_plan", "at": now}
     facts = {"data.product_type": dict(base, version=1, value=[PRODUCT_KINDS[k][1] for k in p["kinds"]])}
-    if len(p["kinds"]) > 1:
+    if len(p["kinds"]) > 1 and str(p.get("main_said") or "").strip():
+        # 주 목적은 사용자가 따로 말했을 때만 옮긴다 -- 없으면 전문판에서 data.product_primary 를 묻는다
         facts["data.product_primary"] = dict(base, version=1, value=PRODUCT_KINDS[product_main(model)][1],
-                                             derived_from=["data.product_type@1"])
+                                             quote=str(p["main_said"]).strip(), derived_from=["data.product_type@1"])
     return {"facts_version": "1", "facts": facts, "history": []}
 
 
@@ -1778,6 +1786,9 @@ def main(argv=None) -> int:
         print("이제 정본을 고쳐 커밋하면 verify 가 자동으로 돕니다. 시험: 정본에 일부러 오류를 넣고 커밋해 보세요")
         return 0
     if a.cmd == "upgrade":
+        if a.facts and os.path.exists(a.facts):
+            print(f"{a.facts} 가 이미 있습니다 -- 덮어쓰지 않습니다 (전문판의 facts.py answer 로 넣으세요). 아무것도 만들지 않았습니다")
+            return 1
         full = upgrade(load(a.model), a.schema, a.pi_schema)
         save(full, a.out)
         print(f"전문판 정본 → {a.out}: 테이블 {len(full['tables'])}개 · 단어 {len(full['words'])}개 "
@@ -1786,9 +1797,6 @@ def main(argv=None) -> int:
             fx = upgrade_facts(load(a.model))
             if fx is None:
                 print(f"만드는 것(product)이 {UNDETERMINED} 라 질문 대장은 만들지 않았습니다 -- 전문판에서 data.product_type 을 묻습니다")
-            elif os.path.exists(a.facts):
-                print(f"{a.facts} 가 이미 있습니다 -- 덮어쓰지 않습니다 (전문판의 facts.py answer 로 넣으세요)")
-                return 1
             else:
                 save(fx, a.facts)
                 print(f"질문 대장 → {a.facts}: " + ", ".join(f"{k}@1" for k in fx["facts"]))

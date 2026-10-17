@@ -10,6 +10,8 @@
 - SKILL.md 질문 0번 "무엇을 만들어 드릴까요?", dev-process-light 카드의 `데이터:` 줄 → `product`
 - 고침: 가져오기 기록의 백업·원본 경로가 macOS(/var → /private/var)·Windows(짧은 이름 RUNNER~1)에서 폴더를 잃고 파일 이름만 남던 문제
   (경로 양쪽을 실제 경로로 맞춘 뒤 비교) -- 0.4.0 부터 CI 의 macOS·Windows 가 실패하던 원인. CI 는 실패한 시험을 주석(annotation)으로 남긴다
+- 독립 검토 반영: `main_said`(여럿일 때 주 목적에 대한 사용자 말) -- 있을 때만 전문판 주 목적으로 옮기고 없으면 전문판에서 묻는다,
+  `product` 값 모양 검사(글자·목록), 프로젝트 안 링크 폴더는 이름 그대로(실제 경로 비교는 밖으로 나올 때만), `upgrade --facts` 는 대장이 있으면 아무것도 만들지 않는다
 - **호환**: 0.4.x 정본은 `product` 를 더해야 `verify` 가 통과한다 -- dev-process-light 의 짝 고정(`data-light.lock.json`)을 올릴 때 함께 안내
 
 ## 0.4.1 — 2026-10-15 · dev-process-light 0.10 3차 요청 (V1~V6)
