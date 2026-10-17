@@ -226,15 +226,20 @@ function stageRels(s, stage) {
 function tables() { const out = []; for (const s of S.model ? S.model.sources : []) for (const t of stageNodes(s)) out.push({s, t, id: gid(s, t.key)}); return out; }
 function relations() { const out = []; for (const s of S.model ? S.model.sources : []) for (const r of stageRels(s)) out.push({s, r, a: gid(s, r.from), b: gid(s, r.to)}); return out; }
 const RENDER_MAX = 800;           // 이보다 많으면 앞의 일부만 그리고 몇 개를 숨겼는지 알린다 (목록·찾기·선택 보기로 나머지)
-function visibleIds() {
-  const all = tables().map(x => x.id);
-  if (S.view === "all" || !S.sel.size) { S.capped = all.length > RENDER_MAX ? all.length : 0;
-    if (!S.capped) return new Set(all);
-    const v = new Set(all.slice(0, RENDER_MAX)); for (const id of S.sel) if (all.includes(id)) v.add(id);   // 고른 것은 상한 밖이어도 그린다
-    return v; }
-  S.capped = 0;
-  const v = new Set([...S.sel].filter(id => all.includes(id)));
-  if (S.view === "near") for (const {a, b} of relations()) { if (S.sel.has(a)) v.add(b); if (S.sel.has(b)) v.add(a); }
+function visibleIds() {             // 모든 보기(전체·선택만·이웃까지)에 같은 표시 상한 -- 고른 것을 먼저, 나머지는 남은 자리만큼
+  const all = tables().map(x => x.id), has = new Set(all);
+  let want;
+  if (S.view === "all" || !S.sel.size) want = all;
+  else {
+    const w = new Set([...S.sel].filter(id => has.has(id)));
+    if (S.view === "near") for (const {a, b} of relations()) { if (S.sel.has(a) && has.has(b)) w.add(b); if (S.sel.has(b) && has.has(a)) w.add(a); }
+    want = [...w];
+  }
+  if (want.length <= RENDER_MAX) { S.capped = 0; return new Set(want); }
+  const v = new Set();
+  for (const id of S.sel) if (has.has(id) && v.size < RENDER_MAX) v.add(id);
+  for (const id of want) { if (v.size >= RENDER_MAX) break; v.add(id); }
+  S.capped = want.length;
   return v;
 }
 function rowsOf(t) {
@@ -440,15 +445,20 @@ function render() {
   drawAllRels(rels, vis, rowY, true);
   focus();
   emptyState(all.length);
+  const hadNote = S.capNote;
   S.capNote = "";
-  if (S.capped) {                   // 숨긴 엔터티·관계를 없는 것처럼 두지 않는다
+  if (S.capped) {                   // 숨긴 엔터티·관계를 없는 것처럼 두지 않는다 -- 그릴 때마다 실제 수로
     const hidden = relations().filter(({a, b}) => !vis.has(a) || !vis.has(b)).length;
-    S.capNote = `엔터티 ${S.capped}개 중 ${vis.size}개만 그렸다 · 숨긴 엔터티와 이어진 관계 ${hidden}개는 그리지 않았다 -- 왼쪽 목록·찾기에서 골라 '선택만'·'이웃까지'로 본다`;
+    S.capNote = `${S.view === "near" ? "이웃까지 " : S.view === "sel" ? "고른 " : ""}엔터티 ${S.capped}개 중 ${vis.size}개만 그렸다 · ` +
+      `숨긴 엔터티와 이어진 관계 ${hidden}개는 그리지 않았다 -- ` +
+      (S.view === "near" ? "이웃이 많다: 목록·찾기에서 이웃을 골라 '선택만'으로 나눠 본다" : "왼쪽 목록·찾기에서 골라 '선택만'·'이웃까지'로 본다");
     if (!$("#status").classList.contains("bad")) status(S.capNote, "off");
-  }
+  } else if (hadNote && !$("#status").classList.contains("bad")) status(`엔터티 ${vis.size}개를 모두 그렸다`);   // 상한이 풀리면 안내도 바꾼다
   if (!S.fitted[S.stage] && all.length) { fit(); S.fitted[S.stage] = true; S.viewMoved = false; }
   applyView();
   stageInfo();
+  document.body.dataset.version = String(S.model.version);     // 어느 판까지 그렸는지 (시험·도구가 다시 그리기가 끝났는지 본다)
+  document.body.dataset.rendered = String((+document.body.dataset.rendered || 0) + 1);
 }
 function emptyState(n) {
   const e = $("#empty");
@@ -620,7 +630,8 @@ function syncSel() {
   document.querySelectorAll("#list .item").forEach(b => b.setAttribute("aria-pressed", S.sel.has(b.dataset.id)));
   if (!S.sel.size && S.view !== "all") S.view = "all";
   syncButtons();
-  if (S.view !== "all") render(); else { document.querySelectorAll(".ent").forEach(g => g.classList.toggle("sel", S.sel.has(g.dataset.id))); focus(); }
+  const undrawn = S.capped && [...S.sel].some(id => !document.querySelector(`.ent[data-id="${CSS.escape(id)}"]`));
+  if (S.view !== "all" || undrawn) render(); else { document.querySelectorAll(".ent").forEach(g => g.classList.toggle("sel", S.sel.has(g.dataset.id))); focus(); }
   if (S.sel.size === 1) showDetail([...S.sel][0]); else if (!S.sel.size) hideDetail();
 }
 
@@ -771,7 +782,10 @@ function api(path, opts) { return fetch(CFG.base + path, Object.assign({cache: "
 const mineKey = (sid, stage) => `mine.${sid}.${stage}`;
 let saveTimer = 0;
 const pending = new Map();         // "단계|원본" -> 보낼 내용 (부를 때 만든다 -- 그사이 탭을 바꿔도 다른 단계 값이 섞이지 않게)
-const echo = new Map();            // "단계|엔터티" -> 이 화면이 저장한 위치 -- 다시 읽을 때 돌아온 자기 저장이 그 뒤 옮긴 위치를 덮지 않게
+const echo = new Map();            // 저장한 값 여러 개를 기억한다 -- 늦게 돌아온 앞선 저장(예: 자동 배치)이 그 뒤의 되돌리기를 덮지 않게
+const ECHO_KEEP = 4;
+function echoAdd(k, j) { const a = echo.get(k) || []; if (a[a.length - 1] !== j) a.push(j); if (a.length > ECHO_KEEP) a.shift(); echo.set(k, a); }
+function echoHas(k, j) { const a = echo.get(k); return !!a && a.includes(j); }            // "단계|엔터티" -> 이 화면이 저장한 위치 -- 다시 읽을 때 돌아온 자기 저장이 그 뒤 옮긴 위치를 덮지 않게
 const lastSrv = {concept: new Map(), logical: new Map()};   // 서버에서 마지막으로 받은 개념·논리 위치 (다른 사람이 바꾼 것만 따른다)
 const pj = (p) => JSON.stringify({x: Math.round(p.x * 10) / 10, y: Math.round(p.y * 10) / 10});
 function keysOf(s, stage) { const out = {}; for (const t of stageNodes(s, stage)) { const p = S.posBy[stage].get(gid(s, t.key)); if (p) out[t.key] = p; } return out; }
@@ -789,7 +803,7 @@ function saveLayout(srcIds, extra) {
     if (extra && extra.previous) { body.previous = {}; for (const t of stageNodes(s, stage)) { const p = extra.previous.get(gid(s, t.key)); if (p) body.previous[t.key] = p; } }
     else if (before.previous) body.previous = before.previous;
     if (extra && extra.algo) body.algo = extra.algo; else if (before.algo) body.algo = before.algo;
-    for (const [k, p] of Object.entries(body.positions)) echo.set(stage + "|" + gid(s, k), pj(p));
+    for (const [k, p] of Object.entries(body.positions)) echoAdd(stage + "|" + gid(s, k), pj(p));
     pending.set(key, body);
   }
   clearTimeout(saveTimer);
@@ -811,7 +825,7 @@ function applySaved(m, fresh) {   // 서버의 단계별 위치·고정 + (내 �
       const L = lay[st] || {positions: {}, pinned: []}, mine = S.mine ? store.get(mineKey(s.id, st), null) : null;
       if (st !== "physical") for (const [k, p] of Object.entries(L.positions || {})) {
         const id = gid(s, k), j = pj(p);
-        if (fresh || !S.posBy[st].has(id) || (lastSrv[st].get(id) !== j && echo.get(st + "|" + id) !== j)) S.posBy[st].set(id, {x: p.x, y: p.y});
+        if (fresh || !S.posBy[st].has(id) || (lastSrv[st].get(id) !== j && !echoHas(st + "|" + id, j))) S.posBy[st].set(id, {x: p.x, y: p.y});
         lastSrv[st].set(id, j);
       }
       if (mine) for (const [k, p] of Object.entries(mine.positions || {})) S.posBy[st].set(gid(s, k), {x: p.x, y: p.y});
@@ -839,7 +853,7 @@ async function load(force) {
     if (S.model) for (const s of m.sources) { const old = S.model.sources.find(x => x.id === s.id); if (!old) continue;
       const dx = s.layout_saved ? 0 : (S.off.get(s.id) || 0);
       for (const t of s.tables) { const o = old.tables.find(x => x.key === t.key), id = gid(s, t.key);
-        if (o && JSON.stringify(o.pos) !== JSON.stringify(t.pos) && t.pos && echo.get("physical|" + id) !== pj(t.pos))
+        if (o && JSON.stringify(o.pos) !== JSON.stringify(t.pos) && t.pos && !echoHas("physical|" + id, pj(t.pos)))
           S.posBy.physical.set(id, {x: t.pos.x + dx, y: t.pos.y}); } }
     applySaved(m, fresh);
     S.model = m; S.pending = false;
