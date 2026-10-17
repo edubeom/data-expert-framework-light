@@ -5,8 +5,9 @@
    "tables": [{"key": "schema.table", "schema", "name", "kor", "kind", "is_pi", "comment", "description", "meaning",
                "columns": [{"name", "kor", "type", "pk", "fk", "unique", "nullable", "pi", "default", "description", "meaning"}],
                "pos": {"x", "y"} | None}],
-   "relations": [{"id", "from", "from_cols", "to", "to_cols", "optional", "one_to_one", "label"}]}
+   "relations": [{"id", "from", "from_cols", "to", "to_cols", "optional", "one_to_one", "label", "rel_kind"}]}
 파일에 적힌 것만 옮긴다. 관계는 원본의 FK(제약)에서만 만든다.
+rel_kind (관계선 종류, classify_relations): identifying 식별 · mandatory 비식별 필수 · optional 비식별 선택 · code 코드 참조.
 """
 from __future__ import annotations
 
@@ -42,10 +43,16 @@ def detect(path) -> str:
     raise SourceError(f"읽을 수 있는 원본이 아니다: {p.name} (model.json · 정의서 .xlsx · pgModeler .dbm)")
 
 
+_CODE_NAME = re.compile(r"^(code|cd)_|_(code|cd)s?$|^codes?$", re.I)
+
+
 def _kind(raw, name: str) -> str:
+    """원본에 구분이 적혀 있으면 그대로, 없으면(.dbm·실제 DB·light) 이름 관례로: pi_ = 개인정보, *_code·*_cd·code_* = 코드."""
     if raw in KINDS:
         return raw
-    return "PI" if name.startswith("pi_") else "기준"
+    if name.startswith("pi_"):
+        return "PI"
+    return "코드" if _CODE_NAME.search(name) else "기준"
 
 
 def _rel_id(frm: str, cols, to: str) -> str:
@@ -305,7 +312,7 @@ def read_light(m: dict, path: Path) -> dict:
                 cols.append({"name": n, "kor": k, "type": "datetime", "pk": False, "fk": None, "unique": False,
                              "nullable": False, "pi": False, "default": None, "description": "", "meaning": {}})
         name = t["name"]
-        tables.append({"key": key, "schema": schema, "name": name, "kor": t.get("label") or "", "kind": "PI" if name.startswith("pi_") else "기준",
+        tables.append({"key": key, "schema": schema, "name": name, "kor": t.get("label") or "", "kind": _kind(None, name),
                        "is_pi": name.startswith("pi_"), "comment": t.get("about") or "", "description": t.get("about") or "", "meaning": {},
                        "columns": cols, "pos": None})
     return {"project": m.get("project") or path.stem, "tables": tables, "relations": _finish_rels(rels), "light": True}
@@ -453,7 +460,7 @@ def read_dbm(path) -> dict:
             elif k.get("type") == "fk-constr":
                 fk_items.append((key, k))
         name = t.get("name")
-        tables[key] = {"key": key, "schema": sch, "name": name, "kor": t.get("alias") or "", "kind": "PI" if name.startswith("pi_") else "기준",
+        tables[key] = {"key": key, "schema": sch, "name": name, "kor": t.get("alias") or "", "kind": _kind(None, name),
                        "is_pi": name.startswith("pi_"), "comment": comment_of(t), "columns": list(cols.values()),
                        "description": parse_comment(comment_of(t))["description"], "meaning": parse_comment(comment_of(t))["meaning"],
                        "pos": {"x": float(pos.get("x") or 0), "y": float(pos.get("y") or 0)} if pos is not None else None}
@@ -480,6 +487,47 @@ def read_dbm(path) -> dict:
         out["warning"] = (f"pgModeler 관계 {len(native)}개는 FK 제약이 파일에 없어 그리지 않았다 ({', '.join(native[:5])}"
                           f"{' …' if len(native) > 5 else ''}) -- 그 관계가 만드는 컬럼도 파일에 없다. pgModeler 에서 '관계를 FK 로 바꾸기' 뒤 저장하거나 정본에서 만든 .dbm 을 연다")
     return out
+
+
+REL_KINDS = ("identifying", "mandatory", "optional", "code")
+
+
+def _rel_kind(identifying: bool, code: bool, optional: bool) -> str:
+    if identifying:
+        return "identifying"
+    if code:
+        return "code"
+    return "optional" if optional else "mandatory"
+
+
+def classify_relations(view: dict) -> dict:
+    """관계선 종류를 붙인다 (화면에서 종류별로 켜고 끄고, 보이는 선만으로 다시 배치하려고).
+    물리: FK 컬럼이 모두 자식의 PK 안에 있으면 식별(부모 식별자를 물려받음) -- 자기 참조는 식별이 아니다.
+          아니면 부모가 코드 테이블이면 코드 참조, 아니면 FK 컬럼이 비어도 되는지(optional)로 필수/선택.
+    논리: 한쪽 엔터티의 식별자가 상대 엔터티(ID 또는 이름)를 품으면 식별. 상대가 코드 테이블에만 대응하면 코드 참조.
+    개념: 나누지 않는다 (업무 관계만 있다)."""
+    tabs = {t["key"]: t for t in view.get("tables") or []}
+    for r in view.get("relations") or []:
+        child, parent = tabs.get(r["from"]), tabs.get(r["to"])
+        pks = {c["name"] for c in (child or {}).get("columns") or [] if c.get("pk")}
+        cols = [c for c in r.get("from_cols") or [] if c]
+        ident = bool(cols) and r["from"] != r["to"] and all(c in pks for c in cols)
+        r["rel_kind"] = _rel_kind(ident, (parent or {}).get("kind") == "코드", bool(r.get("optional")))
+    lg = (view.get("levels") or {}).get("logical")
+    if lg:
+        nodes = {n["key"]: n for n in lg.get("nodes") or []}
+
+        def holds(a, b):        # a 의 식별자가 b 를 품는가
+            na, nb = nodes.get(a) or {}, nodes.get(b) or {}
+            return bool(nb) and a != b and bool({nb.get("key"), nb.get("name")} & set(na.get("identifier") or []))
+
+        def is_code(e):
+            ts = (nodes.get(e) or {}).get("tables") or []
+            return bool(ts) and all((tabs.get(t) or {}).get("kind") == "코드" for t in ts)
+        for r in lg.get("relations") or []:
+            ident = holds(r["from"], r["to"]) or holds(r["to"], r["from"])
+            r["rel_kind"] = _rel_kind(ident, is_code(r["to"]), bool(r.get("optional")))
+    return view
 
 
 def _finish_rels(rels: list[dict]) -> list[dict]:
@@ -587,7 +635,7 @@ def read_pg(dsn: str, schemas: list | None = None) -> dict:
         if keep(sch):
             pc = parse_comment(comment)
             tables[f"{sch}.{name}"] = {"key": f"{sch}.{name}", "schema": sch, "name": name, "kor": _kor_comment(comment),
-                                       "kind": "PI" if name.startswith("pi_") else "기준", "is_pi": name.startswith("pi_"),
+                                       "kind": _kind(None, name), "is_pi": name.startswith("pi_"),
                                        "comment": str(comment or ""), "description": pc["description"], "meaning": pc["meaning"],
                                        "columns": [], "pos": None}
     cols = {}
@@ -626,7 +674,7 @@ def read_pg(dsn: str, schemas: list | None = None) -> dict:
     for r in rels:
         pks = [c["name"] for c in tables[r["from"]]["columns"] if c["pk"]]
         r["one_to_one"] = pks == r["from_cols"]
-    return {"project": mask_dsn(dsn).rsplit("/", 1)[-1] or mask_dsn(dsn), "tables": list(tables.values()), "relations": _finish_rels(rels)}
+    return classify_relations({"project": mask_dsn(dsn).rsplit("/", 1)[-1] or mask_dsn(dsn), "tables": list(tables.values()), "relations": _finish_rels(rels)})
 
 
 READERS = {"model": read_model, "xlsx": read_xlsx, "dbm": read_dbm}
@@ -717,7 +765,7 @@ def read_source(path) -> dict:
     """원본 하나 → 보기 모델 (읽을 수 없으면 SourceError)."""
     kind = detect(path)
     try:
-        view = READERS[kind](path)
+        view = classify_relations(READERS[kind](path))
     except SourceError:
         raise
     except Exception as exc:  # noqa: BLE001 -- 형식이 어긋난 원본(이름이 숫자 · 위치가 글자 …)도 '읽지 못했다'로 알린다

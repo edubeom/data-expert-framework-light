@@ -5,7 +5,8 @@
      "views": {"concept": {"positions": {"C.student": {...}}}, "logical": {"positions": {...}}},
      "pinned": {"physical": ["acad.student"], "concept": [...]},        고정 -- 자동 배치가 옮기지 않는다
      "previous": {"physical": {...}},                                    직전 배치 (되돌리기)
-     "algo": {"physical": {"version": "layered-1", "structure": "<노드·관계 지문>"}}}
+     "algo": {"physical": {"version": "layered-1", "structure": "<노드·관계 지문>", "rels": "identifying,mandatory"}}}
+                                                                         rels = 배치할 때 켜 둔 관계선 종류 (그 선만으로 배치했다)
 
 단계(개념·논리·물리)마다 위치를 따로 둔다. 1판 파일은 그대로 읽는다 (positions = 물리).
 """
@@ -64,7 +65,7 @@ def load(source, stage: str = "physical") -> dict:
     return _points(_dict(_dict(_dict(data.get("views")).get(stage)).get("positions")))
 
 
-ALGO_KEYS = ("version", "structure", "mode")
+ALGO_KEYS = ("version", "structure", "mode", "rels")
 
 
 def _algo(v) -> dict | None:

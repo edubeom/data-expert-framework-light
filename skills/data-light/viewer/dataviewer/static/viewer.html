@@ -124,7 +124,21 @@ svg#c.panning{cursor:grabbing}
 .rel .hit{stroke:transparent;stroke-width:12;cursor:help}
 .rel circle{fill:var(--plate);stroke:var(--rel);stroke-width:1.3}
 .rel .rl{fill:var(--mute);font:400 11px var(--font);paint-order:stroke;stroke:var(--bg);stroke-width:3px}
-.rel.opt .line{stroke-dasharray:5 3}
+/* 관계선 (IE 표기): 식별 = 실선, 비식별 = 점선, 코드 참조 = 짧은 점선·흐린 색. 있어야/없어도 되는지는 끝 표시(| · ○) */
+.rel.nid .line{stroke-dasharray:6 4}
+.rel.code path:not(.hit){stroke:var(--mute)}.rel.code .line{stroke-dasharray:2 3}.rel.code circle{stroke:var(--mute)}
+aside .rk{margin-top:8px;font-size:12px;color:var(--mute)}
+aside .rk .row{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}
+aside .rk button{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--ui-line);background:transparent;border-radius:6px;padding:2px 7px;cursor:pointer;font-size:12px;color:var(--ink)}
+aside .rk button[aria-pressed=false]{color:var(--mute);text-decoration:line-through;opacity:.7}
+aside .rk button:disabled{opacity:.4;cursor:default;text-decoration:none}
+aside .rk button em{font-style:normal;color:var(--mute)}
+aside .rk svg{width:26px;height:8px;flex:none}
+aside .rk svg path{fill:none;stroke:var(--rel);stroke-width:1.5}
+aside .rk .code svg path{stroke:var(--mute);stroke-dasharray:2 3}
+aside .rk .nid svg path{stroke-dasharray:6 4}
+#status-rel:empty{display:none}
+#status-rel{border-left:1px solid var(--ui-line);padding-left:8px}
 .focus .ent{opacity:.28}.focus .rel{opacity:.12}
 .focus .ent.on,.focus .rel.on{opacity:1}
 .rel.on path:not(.hit),.rel.on circle{stroke:var(--hl);stroke-width:2}
@@ -151,7 +165,7 @@ svg#c.panning{cursor:grabbing}
   <span class="spacer"></span>
   <div class="grp"><label><input type="checkbox" id="live"> 실시간</label><button class="btn" id="apply" title="원본을 다시 읽어 그린다">적용</button></div>
   <button class="btn" id="fit" title="화면에 맞추기 (0)">맞추기</button>
-  <div class="grp"><button class="btn" id="relayout" title="보이는 엔터티를 관계에 따라 다시 배치 (고정한 것은 그대로)">자동 배치</button>
+  <div class="grp"><button class="btn" id="relayout" title="보이는 엔터티를 지금 그려진 관계선(켠 종류)에 따라 다시 배치 (고정한 것은 그대로)">자동 배치</button>
     <button class="btn" id="pin" title="선택한 엔터티를 고정 -- 자동 배치가 옮기지 않는다">고정</button>
     <button class="btn" id="undo" title="자동 배치·초기화 전 위치로">되돌리기</button>
     <button class="btn" id="reset" title="고정을 풀고 이 단계 전체를 처음부터 배치 (두 번 눌러야 한다)">초기화</button>
@@ -164,6 +178,7 @@ svg#c.panning{cursor:grabbing}
     <div class="pick"><div class="seg" id="view" role="group" aria-label="보이는 엔터티">
       <button data-v="all">전체</button><button data-v="sel">선택만</button><button data-v="near">이웃까지</button></div>
       <button class="btn" id="clear" title="선택 해제 (Esc)">해제</button></div>
+    <div class="rk" id="relkinds" role="group" aria-label="관계선 종류"><span id="rk-l" title="끈 종류는 그리지 않고, 이웃 보기·자동 배치도 켠 선만 본다">관계선 종류</span><div class="row"></div></div>
   </div>
   <div id="list" role="list"></div>
 </aside>
@@ -172,7 +187,7 @@ svg#c.panning{cursor:grabbing}
   <div id="tip" role="tooltip"></div>
   <div id="empty"><div><b id="empty-h"></b><span id="empty-t"></span></div></div>
   <section id="detail" aria-label="상세"><header><h2 id="d-title"></h2><button class="btn" id="d-close" title="닫기">닫기</button></header><div class="body" id="d-body"></div></section>
-  <div id="status" aria-live="polite"><span class="dot"></span><span id="status-t">읽는 중</span></div>
+  <div id="status" aria-live="polite"><span class="dot"></span><span id="status-t">읽는 중</span><span id="status-rel"></span></div>
 </main>
 <script nonce="__NONCE__">
 "use strict";
@@ -194,7 +209,8 @@ const S = {model: null, level: store.get("level", 3), names: store.get("names", 
            posBy: {concept: new Map(), logical: new Map(), physical: new Map()},
            pins: {concept: new Set(), logical: new Set(), physical: new Set()},
            prev: {concept: null, logical: null, physical: null}, lastLayout: null,
-           touched: {concept: new Set(), logical: new Set(), physical: new Set()}, refit: {}};
+           touched: {concept: new Set(), logical: new Set(), physical: new Set()}, refit: {},
+           relOff: {logical: new Set(store.get("relOff.logical", [])), physical: new Set(store.get("relOff.physical", []))}};
 Object.defineProperty(S, "pos", {get() { return S.posBy[S.stage]; }});
 const LAYOUT = {head1: 30, head2: 42, row: 18, pad: 6, minW: 150, gapX: 70, gapY: 36};
 const measure = document.createElement("canvas").getContext("2d");
@@ -221,10 +237,19 @@ function stageRels(s, stage) {
   if (stage === "physical") return s.relations;
   const lv = levelOf(s, stage); if (!lv) return [];
   return lv.relations.map(r => ({id: r.id, from: r.from, to: r.to, from_cols: [], to_cols: [], optional: !!r.optional,
-                                 one_to_one: r.cardinality === "1:1", label: r.phrase, card: r.cardinality || null, phrase: true}));
+                                 one_to_one: r.cardinality === "1:1", label: r.phrase, card: r.cardinality || null, phrase: true,
+                                 rel_kind: stage === "concept" ? null : r.rel_kind}));
 }
+/* 관계선 종류 -- 원본을 읽을 때 정한다 (sources.classify_relations). 개념 모델은 나누지 않는다 */
+const REL_KINDS = [["identifying", "식별", "부모의 식별자를 물려받는다 (부모/자식)"], ["mandatory", "필수 참조", "식별자는 아니고, 반드시 가리킨다"],
+                   ["optional", "선택 참조", "식별자는 아니고, 비어 있어도 된다"], ["code", "코드 참조", "코드 테이블을 가리킨다"]];
+const REL_KO = Object.fromEntries(REL_KINDS.map(([k, ko]) => [k, ko]));
+function relKind(r) { return r.rel_kind || (r.phrase ? null : r.optional ? "optional" : "mandatory"); }
+function relShown(r) { const k = relKind(r), off = S.relOff[S.stage]; return !k || !off || !off.has(k); }
+function relFilterKey() { const off = S.relOff[S.stage]; return !off || !off.size ? "all" : REL_KINDS.map(x => x[0]).filter(k => !off.has(k)).join(",") || "none"; }
 function tables() { const out = []; for (const s of S.model ? S.model.sources : []) for (const t of stageNodes(s)) out.push({s, t, id: gid(s, t.key)}); return out; }
-function relations() { const out = []; for (const s of S.model ? S.model.sources : []) for (const r of stageRels(s)) out.push({s, r, a: gid(s, r.from), b: gid(s, r.to)}); return out; }
+function allRelations() { const out = []; for (const s of S.model ? S.model.sources : []) for (const r of stageRels(s)) out.push({s, r, a: gid(s, r.from), b: gid(s, r.to)}); return out; }
+function relations() { return allRelations().filter(({r}) => relShown(r)); }     // 켠 종류만 -- 그리기·이웃·자동 배치 모두 이것만 본다
 const RENDER_MAX = 800;           // 이보다 많으면 앞의 일부만 그리고 몇 개를 숨겼는지 알린다 (목록·찾기·선택 보기로 나머지)
 function visibleIds() {             // 모든 보기(전체·선택만·이웃까지)에 같은 표시 상한 -- 고른 것을 먼저, 나머지는 남은 자리만큼
   const all = tables().map(x => x.id), has = new Set(all);
@@ -272,6 +297,7 @@ function hasLayout() { return typeof window.ERDLayout === "object" && window.ERD
 /* ---------------------------------------------------------------- 배치: 관계 중심(erdlayout.js), 예산 안에서. 저장된 위치를 먼저 쓴다 */
 function structureKey() {          // 노드·관계 지문 -- 저장한 배치가 어떤 구조에 대한 것인지
   const parts = []; for (const {id} of tables()) parts.push(id); for (const {r, a, b} of relations()) parts.push(a + ">" + b + ":" + r.id);
+  parts.push("rels=" + relFilterKey());
   let x = 2166136261; for (const ch of parts.sort().join("\n")) { x ^= ch.codePointAt(0); x = Math.imul(x, 16777619) >>> 0; }
   return x.toString(16);
 }
@@ -390,7 +416,7 @@ function autoLayout(only, freeAll) {
     for (const id of Object.keys(res.positions)) S.touched[S.stage].add(id);
     for (const [id, p] of Object.entries(res.positions)) S.pos.set(id, {x: Math.round(p.x), y: Math.round(p.y)});
     S.lastLayout = res; S.lastLayoutAt = Date.now();
-    saveLayout(new Set(input.nodes.map(n => n.id.split("|")[0])), {previous: before, algo: {version: res.algo, structure: structureKey(), mode: res.mode}});
+    saveLayout(new Set(input.nodes.map(n => n.id.split("|")[0])), {previous: before, algo: {version: res.algo, structure: structureKey(), mode: res.mode, rels: relFilterKey()}});
     fit(); syncButtons(); status(layoutNote(res), res.mode === "simple" ? "off" : "");
   });
 }
@@ -457,6 +483,7 @@ function render() {
   if (!S.fitted[S.stage] && all.length) { fit(); S.fitted[S.stage] = true; S.viewMoved = false; }
   applyView();
   stageInfo();
+  syncRelKinds();
   document.body.dataset.version = String(S.model.version);     // 어느 판까지 그렸는지 (시험·도구가 다시 그리기가 끝났는지 본다)
   document.body.dataset.rendered = String((+document.body.dataset.rendered || 0) + 1);
 }
@@ -484,6 +511,35 @@ function stageInfo() {
   const sc = S.model.sources.map(s => (levelOf(s, S.stage) || {}).scope).filter(Boolean);
   box.title = sc.length ? "범위: " + sc.join(" / ") : "";
 }
+/* 관계선 종류 켜고 끄기 -- 단계마다 따로 기억한다 (이 브라우저). 끈 종류는 그리지 않고 상태 줄에 몇 개 숨겼는지 */
+function syncRelKinds() {
+  const row = $("#relkinds .row");
+  if (!row.children.length) for (const [k, ko, why] of REL_KINDS) {
+    const b = h("button", k === "code" ? "code nid" : k === "identifying" ? "" : "nid", null, row);
+    b.type = "button"; b.dataset.k = k; b.title = why;
+    const sv = el("svg", {viewBox: "0 0 26 8", "aria-hidden": "true"}, b); el("path", {d: "M1 4 H25"}, sv);
+    h("span", "", ko, b); h("em", "", "", b);
+  }
+  const counts = {}, all = allRelations();
+  for (const {r} of all) { const k = relKind(r); if (k) counts[k] = (counts[k] || 0) + 1; }
+  const off = S.relOff[S.stage], none = S.stage === "concept";
+  for (const b of row.children) {
+    const k = b.dataset.k;
+    b.disabled = none || !counts[k];
+    b.setAttribute("aria-pressed", String(none || !off.has(k)));
+    b.lastChild.textContent = none ? "" : String(counts[k] || 0);
+  }
+  $("#rk-l").textContent = none ? "관계선 종류 -- 개념 모델은 나누지 않는다" : "관계선 종류";
+  const hidden = none ? 0 : all.length - relations().length;
+  $("#status-rel").textContent = hidden ? `숨긴 관계 ${hidden}개 (${REL_KINDS.filter(([k]) => off.has(k) && counts[k]).map(([, ko]) => ko).join("·")} 끔)` : "";
+}
+$("#relkinds").addEventListener("click", (e) => {
+  const b = e.target.closest("button"); if (!b || b.disabled || S.stage === "concept") return;
+  const off = S.relOff[S.stage], k = b.dataset.k;
+  if (off.has(k)) off.delete(k); else off.add(k);
+  store.set("relOff." + S.stage, [...off]);
+  S.hover = null; render();
+});
 /* 관계선: erdlayout.routes 로 박스를 피하는 경로를 고른다 (끌기 중에는 빠른 길로) */
 function drawAllRels(layer, vis, rowY, routed) {
   lane = 0;
@@ -509,7 +565,8 @@ let lane = 0;
 function drawRel(layer, s, r, a, b, rowY, route) {
   const pa = S.pos.get(a), za = S.size.get(a);
   const ya = rowAt(a, r.from_cols, rowY), yb = rowAt(b, r.to_cols, rowY);
-  const g = el("g", {class: "rel" + (r.optional ? " opt" : ""), "data-a": a, "data-b": b, "data-rid": s.id + "|" + r.id}, layer);
+  const k = relKind(r);
+  const g = el("g", {class: "rel" + (k ? " k-" + k : "") + (k && k !== "identifying" ? " nid" : "") + (k === "code" ? " code" : "") + (r.optional ? " opt" : ""), "data-kind": k || "", "data-a": a, "data-b": b, "data-rid": s.id + "|" + r.id}, layer);
   let pts, self = a === b;
   if (route && route.points && route.points.length > 1) { pts = route.points; self = route.kind === "self"; }
   else {
@@ -550,9 +607,10 @@ function endMany(g, e, r) {
 function relText(s, r) {
   const T = (k) => stageNodes(s).find(t => t.key === k) || {name: k, kor: k};
   const nm = (t) => !PHYS() ? t.name : S.names === "phys" || !t.kor ? t.name : t.kor;
-  if (r.phrase) return `${r.label}\n${nm(T(r.from))} → ${nm(T(r.to))}\n${r.card ? "수량 " + r.card : "수량 미확정"}`;
+  const kk = relKind(r) ? REL_KO[relKind(r)] + " 관계 · " : "";
+  if (r.phrase) return `${r.label}\n${nm(T(r.from))} → ${nm(T(r.to))}\n${kk}${r.card ? "수량 " + r.card : "수량 미확정"}`;
   return `${r.label ? r.label + "\n" : ""}${nm(T(r.from))} (${r.from_cols.join(", ")}) → ${nm(T(r.to))} (${r.to_cols.join(", ")})\n` +
-         `${r.one_to_one ? "1:1" : "여럿:1"} · ${r.optional ? "없어도 된다" : "반드시 있다"}`;
+         `${kk}${r.one_to_one ? "1:1" : "여럿:1"} · ${r.optional ? "없어도 된다" : "반드시 있다"}`;
 }
 function tip(e, s) {
   const t = $("#tip");

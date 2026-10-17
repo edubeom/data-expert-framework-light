@@ -7,4 +7,4 @@
 
     python -m dataviewer db/model.json out/04_table_spec.xlsx other/03_model.dbm [--port 8820] [--no-watch]
 """
-__version__ = "0.9.2"
+__version__ = "0.9.3"
