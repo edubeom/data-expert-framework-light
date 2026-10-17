@@ -13,8 +13,8 @@ Commands
   try     <model>                         run the schema + sample rows in SQLite and probe the rules
   import plan  <file> --table NAME [--label 한글] [--sheet S] [--out plan.json]
   import apply <plan.json> --model <model> --db data/app.db --approval "<사용자 답 그대로>"
-  upgrade <model> [--out model.json] [--schema app] [--pi-schema pi]
-                                          convert to the full framework's model.json
+  upgrade <model> [--out model.json] [--schema app] [--pi-schema pi] [--facts facts.json]
+                                          convert to the full framework's model.json (+ question ledger for product)
   verify  <model> [--db app.db|--no-db] [--mutate]
                                           one pass/fail gate: check + goals + rules + out/ fresh + DB safety
   hook install [--repo .] [--no-ci] [--append]
@@ -44,7 +44,7 @@ import sys
 from pathlib import Path
 
 FORMAT = "data-light/1"
-__version__ = "0.4.1"
+__version__ = "0.5.0"
 NAME = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 TYPES = ("id", "ref", "text", "long_text", "int", "number", "money", "bool", "date", "datetime", "owner")
 ACCESS = ("members", "own", "read")
@@ -63,6 +63,10 @@ RESERVED = {
     "unique", "update", "user", "using", "values", "view", "when", "where", "with",
 }
 ON_DELETE = {"keep": "RESTRICT", "delete": "CASCADE", "clear": "SET NULL"}
+# what this data work hands over (subset of the full framework's data.product_type) -- asked, never guessed
+PRODUCT_KINDS = {"design": ("설계까지", "modeling_files"), "load": ("파일·엑셀 넣기", "ingest_pipeline"),
+                 "manage": ("데이터 관리 (찾고·고치기)", "data_management"), "analyze": ("알고 싶은 것 보기 (분석)", "analytics_bi")}
+UNDETERMINED = "유형 미정"
 PERSONAL_KINDS = ("name", "phone", "email", "address", "birth", "id_number", "account", "health", "photo", "location", "other")
 
 
@@ -285,6 +289,11 @@ def check(model: dict) -> tuple[list[str], list[str]]:
             bad = [k for k in row if k not in cn_seen]
             if bad:
                 err.append(f"{where}: 샘플 {i}번째 행에 없는 칸 {bad}")
+    # what we hand over (product): asked in the user's words, never guessed
+    err += product_errors(model)
+    if model.get("product") is None:
+        warn.append(f"만드는 것(product)을 정하지 않았습니다 ({UNDETERMINED}) -- 사용자에게 '설계까지 / 파일 넣기 / 데이터 관리 / 분석' 중 "
+                    "무엇을 원하는지 묻고 그 말을 said 에 그대로 적으세요. 정하기 전에는 verify 가 통과하지 않습니다")
     # success criteria (harness layer 1): goals = questions the data must answer, not_doing = scope fence
     goals = model.get("goals")
     if goals is None:
@@ -338,6 +347,33 @@ def check(model: dict) -> tuple[list[str], list[str]]:
         if t.get("name") in tbm and reach(t["name"], t["name"]):
             err.append(f"테이블 {t['name']}: 꼭 있어야 하는 참조가 돌고 돕니다(순환) -- 한 칸을 required 에서 빼 주세요")
     return err, warn
+
+
+def product_errors(model: dict) -> list[str]:
+    """product = {"kinds": [design|load|manage|analyze ...], "main": <one of kinds, if more than one>, "said": "<user's words>"}"""
+    p = model.get("product")
+    if p is None:
+        return []
+    if not isinstance(p, dict):
+        return ["product 는 {\"kinds\": [...], \"main\": ..., \"said\": \"사용자 말 그대로\"} 모양입니다"]
+    err = []
+    kinds = p.get("kinds")
+    if not isinstance(kinds, list) or not kinds or any(k not in PRODUCT_KINDS for k in kinds) or len(set(kinds)) != len(kinds):
+        err.append(f"product.kinds 는 {list(PRODUCT_KINDS)} 중에서 하나 이상 (겹치지 않게)")
+        kinds = []
+    if len(kinds) > 1 and p.get("main") not in kinds:
+        err.append("product.main -- 여러 개면 그중 주 목적 하나를 적습니다 (사용자에게 묻습니다)")
+    if p.get("main") is not None and kinds and p.get("main") not in kinds:
+        err.append("product.main 은 kinds 중 하나입니다")
+    if not str(p.get("said") or "").strip():
+        err.append("product.said -- 사용자가 한 말을 그대로 적습니다 (Claude 가 짐작한 것은 적지 않습니다)")
+    return err
+
+
+def product_main(model: dict) -> str | None:
+    p = model.get("product") or {}
+    kinds = p.get("kinds") or []
+    return p.get("main") or (kinds[0] if len(kinds) == 1 else None)
 
 
 # ----------------------------------------------------------------- split
@@ -603,6 +639,12 @@ SPEC_HEAD = ("테이블", "테이블 이름표", "순번", "칸", "칸 이름표
 
 def spec_md(model: dict) -> str:
     out = [f"# {model.get('project', '')} -- 테이블 정의서", "", f"DB: {model.get('db', 'sqlite')}", ""]
+    p = model.get("product")
+    if isinstance(p, dict) and p.get("kinds"):
+        main = product_main(model)
+        rest = [PRODUCT_KINDS[k][0] for k in p["kinds"] if k != main and k in PRODUCT_KINDS]
+        out += [f"만드는 것: **{PRODUCT_KINDS.get(main, (main,))[0]}**" + (f" (함께: {', '.join(rest)})" if rest else "")
+                + f" -- 사용자: \"{p.get('said', '')}\"", ""]
     if model.get("goals") or model.get("not_doing"):
         out += ["## 성공 기준 -- 이 데이터로 할 수 있어야 하는 것", "",
                 "`datalight.py verify` 가 아래 확인 쿼리를 샘플 데이터로 실제로 돌려 봅니다.", ""]
@@ -934,6 +976,18 @@ def verify(model_path, db_path=None, use_db=True, mutate=False) -> tuple[bool, l
     if errs:
         return False, lines + ["결과: 설계 검사(check) 실패 -- 나머지 검사는 건너뜁니다"]
     lines.append("OK: 설계 검사")
+    if m.get("product") is None:
+        ok = False
+        lines.append(f"FAIL: 만드는 것(product)이 {UNDETERMINED} -- 무엇을 만들어 넘기는지 사용자에게 묻고 정본에 적습니다 "
+                     "(설계까지 · 파일 넣기 · 데이터 관리 · 분석)")
+    else:
+        kinds = m["product"]["kinds"]
+        lines.append("OK: 만드는 것 -- " + ", ".join(PRODUCT_KINDS[k][0] for k in kinds) + f" (주: {PRODUCT_KINDS[product_main(m)][0]})")
+        if "analyze" in kinds and not m.get("goals"):
+            ok = False
+            lines.append("FAIL: 분석이 목적인데 성공 기준(goals)이 없습니다 -- 알고 싶은 것을 확인 쿼리로 적어야 실제로 나오는지 볼 수 있습니다")
+        if "manage" in kinds:
+            lines.append("참고: 데이터 관리(찾고·고치기) 화면은 verify 가 보지 않습니다 -- 화면에서 찾고 고쳐 보는 것은 사용자와 함께 확인")
     tok, tlines = try_sqlite(m)
     ok &= tok
     lines += [l for l in tlines if l.startswith("FAIL") or "성공 기준" in l]
@@ -1500,6 +1554,21 @@ def schema_to_model(db_path) -> tuple[dict, list[str]]:
 CLASS_TOKENS = {"id", "no", "nm", "cd", "yn", "at", "dt", "amt", "cnt", "val"}
 
 
+def upgrade_facts(model: dict) -> dict | None:
+    """product → the full framework's question ledger (data/facts.json): data.product_type / data.product_primary, source user"""
+    p = model.get("product")
+    if not isinstance(p, dict) or product_errors(model):
+        return None
+    now = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    said = str(p["said"]).strip()
+    base = {"source": "user", "quote": said, "asked_by": "data", "stage": "data_plan", "at": now}
+    facts = {"data.product_type": dict(base, version=1, value=[PRODUCT_KINDS[k][1] for k in p["kinds"]])}
+    if len(p["kinds"]) > 1:
+        facts["data.product_primary"] = dict(base, version=1, value=PRODUCT_KINDS[product_main(model)][1],
+                                             derived_from=["data.product_type@1"])
+    return {"facts_version": "1", "facts": facts, "history": []}
+
+
 def upgrade(model: dict, schema: str = "app", pi_schema: str | None = None) -> dict:
     """light model → data-expert-framework model.json (passes its check_dictionary / export_all)"""
     errs, _ = check(model)
@@ -1628,6 +1697,7 @@ def main(argv=None) -> int:
     q = hsp.add_parser("status"); q.add_argument("--repo", default=".")
     p = sp.add_parser("upgrade"); p.add_argument("model"); p.add_argument("--out", default="model.json")
     p.add_argument("--schema", default="app"); p.add_argument("--pi-schema")
+    p.add_argument("--facts", help="전문판 질문 대장(data/facts.json)으로 만드는 것(product)도 옮긴다")
     a = ap.parse_args(argv)
 
     if a.cmd == "check":
@@ -1710,6 +1780,16 @@ def main(argv=None) -> int:
         save(full, a.out)
         print(f"전문판 정본 → {a.out}: 테이블 {len(full['tables'])}개 · 단어 {len(full['words'])}개 "
               "(단어의 한글명·약어는 전문판 공통 사전 대조에서 정리)")
+        if a.facts:
+            fx = upgrade_facts(load(a.model))
+            if fx is None:
+                print(f"만드는 것(product)이 {UNDETERMINED} 라 질문 대장은 만들지 않았습니다 -- 전문판에서 data.product_type 을 묻습니다")
+            elif os.path.exists(a.facts):
+                print(f"{a.facts} 가 이미 있습니다 -- 덮어쓰지 않습니다 (전문판의 facts.py answer 로 넣으세요)")
+                return 1
+            else:
+                save(fx, a.facts)
+                print(f"질문 대장 → {a.facts}: " + ", ".join(f"{k}@1" for k in fx["facts"]))
         return 0
     return 2
 

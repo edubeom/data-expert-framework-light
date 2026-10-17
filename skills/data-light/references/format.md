@@ -7,6 +7,7 @@
   "format": "data-light/1",
   "project": "반찬가게 주문",
   "db": "sqlite",
+  "product": {"kinds": ["manage", "analyze"], "main": "manage", "said": "주문을 적어 두고 찾아보고 싶어요. 손님별 금액도요"},
   "goals": [ { 성공 기준 }, ... ],
   "not_doing": ["결제", "배송 추적"],
   "tables": [ { 테이블 }, ... ]
@@ -18,6 +19,21 @@
 | `db` | `sqlite`(기본) 또는 `postgresql` (Supabase 포함) |
 | `signup` | (Supabase) `open` 누구나 가입 · `closed` 새 가입을 끔. 표의 `access: members` 는 `closed` 일 때만 |
 | `outside` | 정본에 일부러 넣지 않은 DB 표 이름 목록 `["log"]` -- `verify` 의 데이터 보호 검사에서 뺀다 |
+
+## 만드는 것 `product` — 맨 먼저, 묻고 짐작하지 않는다
+이 데이터 작업으로 **무엇을 만들어 넘기는지**. 설계 파일이 다 맞아도 "무엇을 만들었나"를 판정할 기준이 없으면 끝이 아니다.
+
+| 키 | 뜻 |
+|---|---|
+| `kinds` | 하나 이상: `design` 설계까지(SQL·그림·정의서) · `load` 파일·엑셀 넣기 · `manage` 데이터 관리(사람이 찾아보고 고침) · `analyze` 알고 싶은 것 보기(분석) |
+| `main` | 여러 개면 그중 주 목적 하나 (하나면 생략) |
+| `said` | **사용자가 한 말 그대로** -- Claude 가 첨부·대화에서 짐작한 것은 적지 않는다 |
+
+- 없으면 `check` 는 참고로 알리고, `verify` 는 **유형 미정**으로 실패한다.
+- `analyze` 가 들어 있으면 성공 기준(`goals`)이 하나 이상 있어야 `verify` 가 통과한다 (알고 싶은 것이 실제로 나오는지 봐야 하므로).
+- `manage` 의 화면(찾고 고치기)은 `verify` 가 보지 않는다 -- 사용자와 함께 화면에서 확인한다.
+- 전문판 `data.product_type`·`data.product_primary` 의 부분집합이다 (`design`=modeling_files · `load`=ingest_pipeline ·
+  `manage`=data_management · `analyze`=analytics_bi). `upgrade --facts data/facts.json` 이 전문판 질문 대장으로 옮긴다 (사용자 답, `said` 가 원문).
 
 ## 성공 기준 `goals` — 설계보다 먼저
 "이 데이터로 무엇을 알 수 있어야 하나?"를 확인 쿼리로 적는다. `try`·`verify` 가 샘플 데이터로 실제로 돌린다.
@@ -96,7 +112,8 @@
 이 형식은 data-expert-framework `model.json` 의 부분집합이다. `upgrade` 가 변환한다:
 type → domains, label → terms(한글명), 이름 토큰 → words(한글명은 전문판 공통 사전 대조 때 정리),
 ref → fk(on_delete RESTRICT/CASCADE/SET NULL) + relationships, personal → `pi`/`pi_type`, `pi_` 테이블 → `is_pi`,
-표의 unique 묶음 → `uniques`, goals → `success_goals`, not_doing → assumptions.
+표의 unique 묶음 → `uniques`, goals → `success_goals`, not_doing → assumptions,
+product → (`--facts`) 전문판 질문 대장의 `data.product_type`·`data.product_primary` (source user, quote = said).
 
 ## PostgreSQL(Supabase) 로 만들 때
 `build --db postgresql` 은 모든 표에 `ENABLE ROW LEVEL SECURITY` 를 넣고, 표의 `access` 대로 실제 규칙(policy)을 만든다.

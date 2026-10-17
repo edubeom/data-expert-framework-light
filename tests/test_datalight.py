@@ -906,6 +906,71 @@ class V041(unittest.TestCase):
         self.assertIn("Authentication → Users → Add user", sql)
 
 
+class V05(unittest.TestCase):
+    """0.5.0 -- 만드는 것(product): 전문판 data.product_type 의 부분집합 (설계·적재·관리·분석), 묻고 짐작하지 않는다"""
+
+    def _verify(self, m):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "model.light.json"
+            dl.save(m, p)
+            dl.build(m, Path(d) / "out")
+            return dl.verify(p, use_db=False)
+
+    def test_missing_product_is_undetermined_and_blocks_verify(self):
+        m = shop()
+        del m["product"]
+        errs, warns = dl.check(m)
+        self.assertEqual(errs, [])
+        self.assertTrue(any("유형 미정" in w for w in warns))
+        ok, lines = self._verify(m)
+        self.assertFalse(ok)
+        self.assertTrue(any(l.startswith("FAIL: 만드는 것(product)이 유형 미정") for l in lines))
+
+    def test_product_shape_rules(self):
+        for bad, msg in ((["manage"], "모양"), ({"kinds": ["crud"], "said": "x"}, "product.kinds"),
+                         ({"kinds": ["manage", "analyze"], "said": "x"}, "product.main"),
+                         ({"kinds": ["manage"], "main": "analyze", "said": "x"}, "kinds 중 하나"),
+                         ({"kinds": ["manage"], "said": " "}, "product.said")):
+            m = shop()
+            m["product"] = bad
+            errs, _ = dl.check(m)
+            self.assertTrue(any(msg in e for e in errs), (bad, errs))
+        m = shop()
+        m["product"] = {"kinds": ["design"], "said": "설계 파일만 주세요"}
+        self.assertEqual(dl.check(m)[0], [])
+        self.assertEqual(dl.product_main(m), "design")
+
+    def test_analyze_needs_goals(self):
+        m = shop()
+        m["product"] = {"kinds": ["analyze"], "said": "매출을 보고 싶어요"}
+        m["goals"] = []
+        ok, lines = self._verify(m)
+        self.assertFalse(ok)
+        self.assertTrue(any("분석이 목적인데 성공 기준" in l for l in lines))
+
+    def test_spec_and_upgrade_carry_product_to_full_ledger(self):
+        m = shop()
+        self.assertIn("만드는 것: **데이터 관리", dl.spec_md(m))
+        fx = dl.upgrade_facts(m)
+        pt, pp = fx["facts"]["data.product_type"], fx["facts"]["data.product_primary"]
+        self.assertEqual(pt["value"], ["data_management", "analytics_bi"])
+        self.assertEqual((pt["source"], pt["quote"]), ("user", m["product"]["said"]))
+        self.assertEqual((pp["value"], pp["derived_from"]), ("data_management", ["data.product_type@1"]))
+        del m["product"]
+        self.assertIsNone(dl.upgrade_facts(m))
+        with tempfile.TemporaryDirectory() as d:
+            r = run("upgrade", SHOP, "--out", Path(d) / "model.json", "--facts", Path(d) / "facts.json")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("data.product_type@1", r.stdout)
+            self.assertEqual(run("upgrade", SHOP, "--out", Path(d) / "model.json", "--facts", Path(d) / "facts.json").returncode, 1)
+            scripts = os.environ.get("DEF_SCRIPTS")
+            if scripts:                                                            # 전문판 facts.py 가 같은 판정을 내는지
+                r = subprocess.run([sys.executable, str(Path(scripts) / "facts.py"), "product", "--facts", str(Path(d) / "facts.json"),
+                                    "--json"], capture_output=True, text=True, encoding="utf-8")
+                self.assertEqual(r.returncode, 0, r.stdout)
+                self.assertEqual(json.loads(r.stdout)["primary"], "data_management")
+
+
 class Cli(unittest.TestCase):
     def test_check_exit_codes(self):
         self.assertEqual(run("check", SHOP).returncode, 0)

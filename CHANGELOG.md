@@ -1,5 +1,15 @@
 # 변경 기록
 
+## 0.5.0 — 2026-10-17 · 전문판 0.6.0 (FW-01) 부분집합 — 만드는 것(product)
+- 정본 `product`: `kinds`(design 설계까지 · load 파일 넣기 · manage 데이터 관리 · analyze 분석, 여러 개) · `main`(여럿이면 주 목적) ·
+  `said`(**사용자 말 그대로** -- 짐작한 것은 적지 않는다, 전문판 FW-06 의 부분집합). 전문판 `data.product_type`·`data.product_primary` 의 부분집합
+- `check`: 없으면 참고("유형 미정"), 모양이 틀리면 고칠 것 · `verify`: 없으면 **유형 미정으로 실패**, analyze 인데 성공 기준이 없으면 실패,
+  manage 는 화면을 보지 않는다는 참고
+- 정의서(spec.md) 맨 위에 "만드는 것"과 사용자 말 · `upgrade --facts data/facts.json` 이 전문판 질문 대장으로 옮김(사용자 답, 원문 = said),
+  전문판 `facts.py product` 가 같은 판정을 내는지 시험(DEF_SCRIPTS)
+- SKILL.md 질문 0번 "무엇을 만들어 드릴까요?", dev-process-light 카드의 `데이터:` 줄 → `product`
+- **호환**: 0.4.x 정본은 `product` 를 더해야 `verify` 가 통과한다 -- dev-process-light 의 짝 고정(`data-light.lock.json`)을 올릴 때 함께 안내
+
 ## 0.4.1 — 2026-10-15 · dev-process-light 0.10 3차 요청 (V1~V6)
 - **V1 급함: macOS 에서 커밋 훅이 모든 커밋을 막던 문제** — 0.4.0 훅의 `$( … case … )` 를 macOS `/bin/sh`(bash 3.2)가 못 읽음.
   case 패턴 앞에 `(` (POSIX), `hook install` 이 설치 뒤 `sh -n` 으로 확인해 못 읽으면 우리 블록을 빼고 알림(커밋을 막는 훅을 남기지 않음), CI 에 macOS 추가

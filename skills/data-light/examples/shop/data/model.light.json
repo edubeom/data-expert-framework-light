@@ -2,6 +2,14 @@
   "format": "data-light/1",
   "project": "반찬가게 주문",
   "db": "sqlite",
+  "product": {
+    "kinds": [
+      "manage",
+      "analyze"
+    ],
+    "main": "manage",
+    "said": "주문을 받아 적어 두고 찾아보고 싶어요. 손님별로 얼마 주문했는지도 보고 싶고요"
+  },
   "goals": [
     {
       "say": "손님별 주문 금액 합계를 볼 수 있다",
