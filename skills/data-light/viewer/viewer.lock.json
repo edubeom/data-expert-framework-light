@@ -1,15 +1,15 @@
 {
   "about": "data-expert-framework 의 runtime/viewer/dataviewer 사본 (바이트 그대로). 고치지 않는다 -- 원본에서 고치고 tools/update_viewer.py 로만 바꾼다.",
   "source": "sungbeom78/data-expert-framework (runtime/viewer)",
-  "commit": "263c5f1f68fe8229a271e47482e3ee7fb8b0b3c5",
-  "version": "0.9.0",
+  "commit": "2c4166a6e4b8b929337237cc836e20834b676e93",
+  "version": "0.9.1",
   "files": {
-    "__init__.py": "7e9338d008d2695b36490d40760f90aea4a6a954498cf4cd2b8826079dc9f47e",
+    "__init__.py": "0c23bf2ad29f52f4c46b8d31e79f2ef9b3aae16c691629b646dc993fc6d43fb3",
     "__main__.py": "3bbe39c0a90d29aa277fae29ce10f9188585677b520d721596479f8a4096b9f8",
     "layout.py": "ffd70ec22f44372f9be7ef03d3b0656fdbcf06e8d4fd727b422e0b9ae5b3de8a",
     "server.py": "1b76fb2da7599fba4455d158a2ddea7227838779d8a114e052f6c3e1107a5602",
-    "sources.py": "638b786bcc58cf422b70fc6a8fb2ee576959e1342a106f839f8eaffadc3447bb",
-    "static/viewer.html": "f952d3d6cb8bc230c7f567484f0ef2435ea4097da147041e4a6fc190cd73bd3f",
-    "static/erdlayout.js": "bfc13b3fadbe17b7f48d9a9a3fedbee5ebb69119d50e5423365088ae07e6d4a8"
+    "sources.py": "5ea88261a6bd0c0c3d80a55e15ae4e58644e195271911712669248da26f09eea",
+    "static/viewer.html": "0788128809e5e396121eab8b93b41a5dc175827366a6b7a498b56a8ff638f5f7",
+    "static/erdlayout.js": "6cce25333b95a4f60af843c94ae8ac5dc8ba62f30a0a45bbb083d07e8787189d"
   }
 }

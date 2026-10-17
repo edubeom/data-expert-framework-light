@@ -136,7 +136,7 @@ svg#c.panning{cursor:grabbing}
 </style>
 <script nonce="__NONCE__" src="__BASE__/erdlayout.js"></script>
 </head>
-<body class="t-paper">
+<body class="t-paper" data-layout="idle">
 <header>
   <h1 id="title">ERD 보기<small id="sub"></small></h1>
   <div class="tabs" id="stages" role="tablist" aria-label="모델 단계">
@@ -193,7 +193,8 @@ const S = {model: null, level: store.get("level", 3), names: store.get("names", 
            z: 1, px: 40, py: 40, pending: false, fitted: {}, hover: null, placed: new Set(), off: new Map(),
            posBy: {concept: new Map(), logical: new Map(), physical: new Map()},
            pins: {concept: new Set(), logical: new Set(), physical: new Set()},
-           prev: {concept: null, logical: null, physical: null}, lastLayout: null};
+           prev: {concept: null, logical: null, physical: null}, lastLayout: null,
+           touched: {concept: new Set(), logical: new Set(), physical: new Set()}, refit: {}};
 Object.defineProperty(S, "pos", {get() { return S.posBy[S.stage]; }});
 const LAYOUT = {head1: 30, head2: 42, row: 18, pad: 6, minW: 150, gapX: 70, gapY: 36};
 const measure = document.createElement("canvas").getContext("2d");
@@ -224,9 +225,14 @@ function stageRels(s, stage) {
 }
 function tables() { const out = []; for (const s of S.model ? S.model.sources : []) for (const t of stageNodes(s)) out.push({s, t, id: gid(s, t.key)}); return out; }
 function relations() { const out = []; for (const s of S.model ? S.model.sources : []) for (const r of stageRels(s)) out.push({s, r, a: gid(s, r.from), b: gid(s, r.to)}); return out; }
+const RENDER_MAX = 800;           // 이보다 많으면 앞의 일부만 그리고 몇 개를 숨겼는지 알린다 (목록·찾기·선택 보기로 나머지)
 function visibleIds() {
   const all = tables().map(x => x.id);
-  if (S.view === "all" || !S.sel.size) return new Set(all);
+  if (S.view === "all" || !S.sel.size) { S.capped = all.length > RENDER_MAX ? all.length : 0;
+    if (!S.capped) return new Set(all);
+    const v = new Set(all.slice(0, RENDER_MAX)); for (const id of S.sel) if (all.includes(id)) v.add(id);   // 고른 것은 상한 밖이어도 그린다
+    return v; }
+  S.capped = 0;
   const v = new Set([...S.sel].filter(id => all.includes(id)));
   if (S.view === "near") for (const {a, b} of relations()) { if (S.sel.has(a)) v.add(b); if (S.sel.has(b)) v.add(a); }
   return v;
@@ -291,14 +297,29 @@ function placeMissing() {         // 위치가 없는 엔터티만 놓는다 -- 
   const todo = all.filter(x => !S.pos.has(x.id));
   if (!todo.length) return;
   if (!hasLayout()) { fallbackPlace(todo); return; }
+  // 먼저 가벼운 격자로 바로 그리고(메인 스레드는 선형 계산만), 관계 중심 배치는 Worker 에서 새 엔터티에만 (예산·취소 그대로)
   const fixed = new Set(all.filter(x => S.pos.has(x.id)).map(x => x.id));
   const only = new Set(all.map(x => x.id)); only.fixed = fixed;
   const inp = layoutInput(only, false);
   if (fixed.size) { const b = bbox([...fixed]); inp.origin = {x: b.x2 + 120, y: b.y1}; }     // 새 것은 기존 그림 오른쪽에서 시작
-  const res = ERDLayout.layout(inp, {ms: 250, targetMs: 120});
-  for (const {id} of todo) { const p = res.positions[id]; if (p) S.pos.set(id, {x: Math.round(p.x), y: Math.round(p.y)}); }
-  for (const {id} of todo) if (!S.pos.has(id)) fallbackPlace([{id}]);
-  if (res.mode === "simple") S.lastLayout = res;
+  const q = ERDLayout.quick(inp);
+  for (const {id} of todo) { const p = q.positions[id]; if (p) S.pos.set(id, {x: Math.round(p.x), y: Math.round(p.y)}); else fallbackPlace([{id}]); }
+  const ids = new Set(todo.map(x => x.id));
+  if (inp.nodes.length <= ERDLayout.DEFAULT_BUDGET.maxNodes && inp.edges.length <= ERDLayout.DEFAULT_BUDGET.maxEdges)
+    if (!worker) { const stage = S.stage; document.body.dataset.layout = "busy"; clearTimeout(refineTimer);
+      refineTimer = setTimeout(() => { if (S.stage === stage && !worker) refine(ids, inp, stage); else document.body.dataset.layout = worker ? "busy" : "idle"; }, 0); }
+  else S.lastLayout = {mode: "simple", reason: "too_large", metrics: {ms: 0, crossings: -1}, warnings: []};
+}
+let refineTimer = 0;
+function refine(ids, inp, stage) { // 처음 놓은 엔터티를 관계 중심으로 -- 그사이 사람이 옮긴 것은 건드리지 않는다, 저장하지 않는다
+  runLayout(inp, (res) => {
+    if (!res || S.stage !== stage) return;
+    let n = 0;
+    for (const id of ids) if (!S.touched[stage].has(id) && res.positions[id]) { S.pos.set(id, {x: Math.round(res.positions[id].x), y: Math.round(res.positions[id].y)}); n++; }
+    if (res.mode === "simple") S.lastLayout = res;
+    if (n) { render(); if (!S.refit[stage] && !S.viewMoved) { fit(); S.refit[stage] = true; } }
+    if (!$("#status").classList.contains("bad")) status(layoutNote(res), res.mode === "simple" ? "off" : "");
+  }, true);
 }
 /* 원본끼리 겹치면 뒤 원본을 오른쪽으로 민다 -- 처음 그릴 때만. 사람이 옮겨 겹친 것은 그대로 둔다 */
 function separate(all) {
@@ -324,25 +345,27 @@ function bbox(ids) {
 }
 /* 자동 배치는 Worker 에서 (화면이 멈추지 않게). 새 요청이 오면 이전 계산을 멈추고, 오래된 결과는 버린다 */
 let worker = null, jobSeq = 0, jobTimer = 0;
-function stopJob() { if (worker) { worker.terminate(); worker = null; } clearTimeout(jobTimer); }
-function runLayout(input, done) {
+function stopJob() { if (worker) { worker.terminate(); worker = null; } clearTimeout(jobTimer); document.body.dataset.layout = "idle"; }
+function quickResult(input, why) { const q = ERDLayout.quick(input); return Object.assign(q, {reason: why, metrics: {ms: 0, crossings: -1}, warnings: []}); }
+function runLayout(input, done, quiet) {
   const id = ++jobSeq, stamp = S.stage + "|" + (S.model && S.model.version) + "|" + structureKey();
   stopJob();
-  const finish = (res, err) => { if (id !== jobSeq) return; stopJob();
-    if (stamp !== S.stage + "|" + (S.model && S.model.version) + "|" + structureKey()) { status("배치하는 동안 화면이 바뀌어 결과를 버렸다 -- 다시 누른다", "off"); return; }
+  document.body.dataset.layout = "busy";
+  const finish = (res, err) => { if (id !== jobSeq) return; stopJob(); document.body.dataset.layout = "idle";
+    if (stamp !== S.stage + "|" + (S.model && S.model.version) + "|" + structureKey()) { if (!quiet) status("배치하는 동안 화면이 바뀌어 결과를 버렸다 -- 다시 누른다", "off"); return; }
     done(res, err); };
   let w = null;
   try { w = new Worker(CFG.base + "/erdlayout.js"); } catch (e) { w = null; }
-  if (!w) { if (!hasLayout()) return finish(null, "배치 모듈을 읽지 못했다"); return finish(ERDLayout.layout(input, {ms: 1000})); }
+  if (!w) { if (!hasLayout()) return finish(null, "배치 모듈을 읽지 못했다"); return finish(quickResult(input, "no_worker")); }   // 메인 스레드는 격자만
   worker = w;
   jobTimer = setTimeout(() => finish(null, "시간 초과"), 1600);           // 1초 예산 + 여유 -- 넘으면 멈추고 그대로 둔다
   w.onmessage = (ev) => { const m = ev.data || {}; if (m.jobId === id) finish(m.result || null, m.error || null); };
-  w.onerror = (ev) => { ev.preventDefault && ev.preventDefault(); if (hasLayout()) finish(ERDLayout.layout(input, {ms: 1000})); else finish(null, "배치 계산 실패"); };
+  w.onerror = (ev) => { ev.preventDefault && ev.preventDefault(); if (hasLayout()) finish(quickResult(input, "no_worker")); else finish(null, "배치 계산 실패"); };
   w.postMessage({jobId: id, op: "layout", input, budget: {ms: 1000, targetMs: 250}});
-  status("배치하는 중…", "off");
+  if (!quiet) status("배치하는 중…", "off");
 }
 const REASON = {too_large: "엔터티·관계가 많아 간소 배치 -- 선택·이웃 보기에서 자동 배치하면 자세히 놓는다", time_budget: "계산 시간 예산(1초)을 넘어 간소 배치",
-                work_budget: "계산량 예산을 넘어 간소 배치"};
+                work_budget: "계산량 예산을 넘어 간소 배치", no_worker: "이 브라우저에서 배치 계산을 따로 돌릴 수 없어 격자로 놓았다"};
 function layoutNote(res) {
   if (!res) return "";
   const m = res.metrics || {};
@@ -359,6 +382,7 @@ function autoLayout(only, freeAll) {
   runLayout(input, (res, err) => {
     if (!res) { status(`자동 배치를 못 했다 (${err}) -- 지금 위치를 그대로 둔다`, "bad"); return; }
     S.prev[S.stage] = before;
+    for (const id of Object.keys(res.positions)) S.touched[S.stage].add(id);
     for (const [id, p] of Object.entries(res.positions)) S.pos.set(id, {x: Math.round(p.x), y: Math.round(p.y)});
     S.lastLayout = res; S.lastLayoutAt = Date.now();
     saveLayout(new Set(input.nodes.map(n => n.id.split("|")[0])), {previous: before, algo: {version: res.algo, structure: structureKey(), mode: res.mode}});
@@ -416,7 +440,13 @@ function render() {
   drawAllRels(rels, vis, rowY, true);
   focus();
   emptyState(all.length);
-  if (!S.fitted[S.stage] && all.length) { fit(); S.fitted[S.stage] = true; }
+  S.capNote = "";
+  if (S.capped) {                   // 숨긴 엔터티·관계를 없는 것처럼 두지 않는다
+    const hidden = relations().filter(({a, b}) => !vis.has(a) || !vis.has(b)).length;
+    S.capNote = `엔터티 ${S.capped}개 중 ${vis.size}개만 그렸다 · 숨긴 엔터티와 이어진 관계 ${hidden}개는 그리지 않았다 -- 왼쪽 목록·찾기에서 골라 '선택만'·'이웃까지'로 본다`;
+    if (!$("#status").classList.contains("bad")) status(S.capNote, "off");
+  }
+  if (!S.fitted[S.stage] && all.length) { fit(); S.fitted[S.stage] = true; S.viewMoved = false; }
   applyView();
   stageInfo();
 }
@@ -704,7 +734,7 @@ $("#c").addEventListener("pointermove", (e) => {
   if (!drag) { const g = e.target.closest(".ent"); const id = g ? g.dataset.id : null; const cur = S.hover && S.hover.ent;
     const onRel = S.hover && S.hover.rel && S.hover.rel.isConnected;
     if (!onRel && id !== cur) { S.hover = id ? {ent: id} : null; focus(); } return; }
-  if (drag.kind === "pan") { const dx = e.clientX - drag.sx, dy = e.clientY - drag.sy; if (Math.abs(dx) + Math.abs(dy) > 3) drag.moved = true; S.px = drag.px + dx; S.py = drag.py + dy; applyView(); return; }
+  if (drag.kind === "pan") { const dx = e.clientX - drag.sx, dy = e.clientY - drag.sy; if (Math.abs(dx) + Math.abs(dy) > 3) drag.moved = true; S.px = drag.px + dx; S.py = drag.py + dy; S.viewMoved = true; applyView(); return; }
   const w = toWorld(e), dx = w.x - drag.start.x, dy = w.y - drag.start.y;
   if (!drag.moved && Math.abs(dx) + Math.abs(dy) < 3 / S.z) return;
   drag.moved = true;
@@ -715,7 +745,8 @@ $("#c").addEventListener("pointermove", (e) => {
 $("#c").addEventListener("pointerup", () => {
   if (!drag) return;
   const d = drag; drag = null; $("#c").classList.remove("panning");
-  if (d.kind === "ent") { if (d.moved) saveLayout(new Set(d.ids.map(id => id.split("|")[0]))); else if (!d.mod) toggleSel(d.id, false); }
+  if (d.kind === "ent") { if (d.moved) for (const id of d.ids) S.touched[S.stage].add(id);
+    if (d.moved) saveLayout(new Set(d.ids.map(id => id.split("|")[0]))); else if (!d.mod) toggleSel(d.id, false); }
   else if (!d.moved && S.sel.size && S.view === "all") { S.sel.clear(); syncSel(); }
 });
 $("#c").addEventListener("dblclick", (e) => { const g = e.target.closest(".ent"); if (g) { S.sel.clear(); S.sel.add(g.dataset.id); S.view = "near"; syncSel(); fit(); } });
@@ -723,7 +754,7 @@ $("#c").addEventListener("wheel", (e) => {
   e.preventDefault();
   const r = $("#c").getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
   const z = Math.max(0.1, Math.min(3, S.z * Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.0018))));
-  S.px = mx - (mx - S.px) * z / S.z; S.py = my - (my - S.py) * z / S.z; S.z = z; applyView();     // 확대·이동은 배치를 다시 계산하지 않는다
+  S.px = mx - (mx - S.px) * z / S.z; S.py = my - (my - S.py) * z / S.z; S.z = z; S.viewMoved = true; applyView();     // 확대·이동은 배치를 다시 계산하지 않는다
 }, {passive: false});
 $("#c").addEventListener("keydown", (e) => { const g = e.target.closest && e.target.closest(".ent"); if (g && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); toggleSel(g.dataset.id, e.shiftKey); } });
 let relTimer = 0;
@@ -793,7 +824,8 @@ function applySaved(m, fresh) {   // 서버의 단계별 위치·고정 + (내 �
   }
 }
 function resetLocal() {           // '내 화면에만'을 바꿀 때: 화면에 남은 위치·고정을 버리고 새로 읽는다 (내 위치가 공유 파일로 새지 않게)
-  for (const st of STAGES) { S.posBy[st] = new Map(); S.pins[st] = new Set(); S.prev[st] = null; }
+  for (const st of STAGES) { S.posBy[st] = new Map(); S.pins[st] = new Set(); S.prev[st] = null; S.touched[st] = new Set(); }
+  S.refit = {};
   for (const st of ["concept", "logical"]) lastSrv[st].clear();
   S.placed = new Set(); S.off = new Map(); S.fitted = {}; echo.clear(); S.model = null;
 }
@@ -819,7 +851,7 @@ async function load(force) {
     if (S.sel.size === 1) showDetail([...S.sel][0]);
     const bad = m.sources.filter(s => s.error);
     const n = m.sources.reduce((a, s) => a + s.tables.length, 0);
-    status(bad.length ? `${bad.map(s => s.name).join(", ")}: 읽지 못했다 (왼쪽 목록에 이유)` :
+    status(bad.length ? `${bad.map(s => s.name).join(", ")}: 읽지 못했다 (왼쪽 목록에 이유)` : S.capNote ? S.capNote :
            S.lastLayout && (S.lastLayout.mode === "simple" || Date.now() - (S.lastLayoutAt || 0) < 4000) ? layoutNote(S.lastLayout) :
            `원본 ${m.sources.length}개 · 엔터티 ${n}개${fresh ? "" : " · 다시 읽었다"}`, bad.length ? "bad" : "");
   } catch (e) { status("서버에 닿지 않는다 -- python -m dataviewer 가 돌고 있는지 본다", "bad"); }
@@ -862,7 +894,7 @@ function syncButtons() {
 }
 function setStage(stage, draw) {
   if (stage === S.stage) return;
-  stopJob(); jobSeq++;                    // 단계를 바꾸면 하던 배치 계산은 버린다
+  stopJob(); jobSeq++; clearTimeout(refineTimer);   // 단계를 바꾸면 하던 배치 계산은 버린다
   S.stage = stage; store.set("stage", stage); S.sel.clear(); S.view = "all"; S.hover = null; hideDetail();
   if (draw !== false) { syncButtons(); renderList(); render(); }
 }

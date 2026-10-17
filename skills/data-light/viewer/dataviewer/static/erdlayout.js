@@ -57,7 +57,7 @@
   const NOGUARD = {elapsed: () => 0, check() {}, work() {}};
 
   /* ------------------------------------------------------------------ input */
-  function prepare(input, guard) {
+  function prepare(input, guard, maxPinPairs) {
     input = input || {};
     const o = input.origin || {};
     const P = {gapX: num(input.gapX, 70), gapY: num(input.gapY, 36), groupGap: num(input.groupGap, 90),
@@ -81,6 +81,7 @@
       P.edges.push({id: String(e.id), from, to});
     }
     const pins = P.nodes.filter(n => n.pinned).map(n => ({id: n.id, x: n.pinned.x, y: n.pinned.y, w: n.w, h: n.h}));
+    if (maxPinPairs !== undefined && pins.length * pins.length > maxPinPairs) { P.pins = pins; P.pinCheckSkipped = true; return P; }
     for (let i = 0; i < pins.length; i++) for (let j = i + 1; j < pins.length; j++) {
       guard.work(1);
       if (hits(pins[i], pins[j], 0)) P.warnings.push({kind: "pin_conflict", ids: [pins[i].id, pins[j].id]});
@@ -366,33 +367,61 @@
   }
 
   /* ---------------------------------------------------------------- layout */
+  // Cheap fallback, O(n log n) and no layering: rows of boxes by group then id, below any pinned boxes.
+  // Used when the graph is too large or a budget ran out, so the fallback itself can never overrun.
+  function grid(P) {
+    const pos = {}, free = P.nodes.filter(n => !n.pinned);
+    free.sort((a, b) => cmp(a.group, b.group) || cmp(a.id, b.id));
+    let area = 0; for (const n of free) area += (n.w + P.gapX) * (n.h + P.gapY);
+    const W = Math.max(1800, Math.sqrt(area) * 1.3);
+    let top = P.origin.y;              // only pins that share the grid's columns push it down
+    for (const p of P.pins) if (p.x < P.origin.x + W && p.x + p.w > P.origin.x && p.y + p.h > P.origin.y) top = Math.max(top, p.y + p.h + P.gapY);
+    let x = P.origin.x, y = top, rowH = 0, group = null;
+    for (const n of free) {
+      const newGroup = group !== null && n.group !== group;
+      if (newGroup || (x > P.origin.x && x + n.w - P.origin.x > W)) { x = P.origin.x; y += rowH + (newGroup ? P.groupGap : P.gapY); rowH = 0; }
+      group = n.group; pos[n.id] = {x, y}; x += n.w + P.gapX; rowH = Math.max(rowH, n.h);
+    }
+    for (const n of P.nodes) if (n.pinned) pos[n.id] = {x: n.pinned.x, y: n.pinned.y};
+    return pos;
+  }
+
+  /* ---------------------------------------------------------------- layout */
   function layout(input, budget, clock) {
     const B = Object.assign({}, DEFAULT_BUDGET, budget || {});
     clock = clock || defaultClock;
     const guard = mkGuard(B, clock), stats = {iterations: 0, truncated: false};
+    const nN = ((input && input.nodes) || []).length, nE = ((input && input.edges) || []).length;
     let P = null, mode = "detailed", reason = null, positions;
     try {
+      if (nN > B.maxNodes || nE > B.maxEdges) throw new Abort("too_large");     // decided before any per-pair work
       P = prepare(input, guard);
       guard.check();
-      if (P.nodes.length > B.maxNodes || P.edges.length > B.maxEdges) throw new Abort("too_large");
       positions = arrange(P, false, B, guard, stats);
+      guard.check();
     } catch (e) {
       if (!(e instanceof Abort)) throw e;
       mode = "simple"; reason = e.reason; stats.truncated = true;
-      if (!P) P = prepare(input, NOGUARD);
-      positions = arrange(P, true, B, NOGUARD, stats);
+      P = prepare(input, NOGUARD, 90000);            // linear except the pin-pair check, which is capped
+      positions = grid(P);
     }
-    const small = P.edges.length <= B.maxEdges;
-    let crossings = small ? countCrossings(positions, P.nodes, P.edges) : -1, keptBaseline = false;
-    const ownCrossings = crossings;
-    const base = small ? countCrossings(baseline(input).positions, P.nodes, P.edges) : -1;
-    if (mode === "detailed" && crossings > base && !P.pins.length) {
-      positions = baseline(input).positions; crossings = base; keptBaseline = true;
+    // Quality metrics only for detailed layouts and only while time is left (they are reports, not the layout).
+    let crossings = -1, base = -1, keptBaseline = false, overlaps, own = -1;
+    if (mode === "detailed") {
+      try {
+        guard.check(); crossings = countCrossings(positions, P.nodes, P.edges);
+        own = crossings;
+        guard.check(); const bl = baseline(input); base = countCrossings(bl.positions, P.nodes, P.edges);
+        if (crossings > base && !P.pins.length) { positions = bl.positions; crossings = base; keptBaseline = true; }
+      } catch (e) { if (!(e instanceof Abort)) throw e; stats.truncated = true; }
+      overlaps = countOverlaps(positions, P.nodes);
+    } else {
+      overlaps = P.pinCheckSkipped ? -1 : P.warnings.filter(w => w.kind === "pin_conflict").length;   // the grid itself never overlaps
     }
+    const ownCrossings = own;
     return {positions, mode, reason, algo: ALGO_VERSION, warnings: P.warnings,
-      metrics: {nodes: P.nodes.length, edges: P.edges.length, crossings, baselineCrossings: base,
-        overlaps: countOverlaps(positions, P.nodes), ms: Math.round(guard.elapsed() * 10) / 10,
-        iterations: stats.iterations, routeChecks: 0, truncated: stats.truncated, keptBaseline, ownCrossings}};
+      metrics: {nodes: P.nodes.length, edges: P.edges.length, crossings, baselineCrossings: base, overlaps,
+        ms: Math.round(guard.elapsed() * 10) / 10, iterations: stats.iterations, routeChecks: 0, truncated: stats.truncated, keptBaseline, ownCrossings}};
   }
 
   /* ---------------------------------------------------------------- routes */
@@ -506,7 +535,8 @@
     return {paths, warnings, metrics: {boxHits, directHits, checks, ms: Math.round((clock() - t0) * 10) / 10, truncated}};
   }
 
-  const ERDLayout = {ALGO_VERSION, DEFAULT_BUDGET, layout, baseline, routes, countCrossings, countOverlaps};
+  function quick(input) { return {positions: grid(prepare(input, NOGUARD, 90000)), mode: "simple", reason: "quick"}; }   // first paint
+  const ERDLayout = {ALGO_VERSION, DEFAULT_BUDGET, layout, baseline, routes, quick, countCrossings, countOverlaps};
 
   if (typeof module !== "undefined" && module.exports) module.exports = ERDLayout;
   else if (root) root.ERDLayout = ERDLayout;

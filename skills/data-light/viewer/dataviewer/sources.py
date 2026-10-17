@@ -170,16 +170,35 @@ def _h(obj) -> str:
 
 
 def level_hash(m: dict, level: str) -> str:
-    """data-modeling scripts/concept_model.py level_hash 와 같은 지문 (확인 뒤 바뀌었는지 보이려고)."""
+    """data-modeling scripts/concept_model.py level_hash 와 같은 지문 (확인 뒤 바뀌었는지 보이려고) -- 바꾸면 둘 다."""
     if level == "concept":
         cm = m.get("concept_model") or {}
-        return _h({"concepts": [{k: c.get(k) for k in ("id", "name", "definition", "kind")} for c in cm.get("concepts") or []],
-                   "relations": [{k: r.get(k) for k in ("id", "from", "to", "phrase", "cardinality")} for r in cm.get("relations") or []]})
+        return _h({"scope": cm.get("scope"),
+                   "concepts": [{k: c.get(k) for k in ("id", "name", "definition", "kind", "aliases")} for c in cm.get("concepts") or [] if isinstance(c, dict)],
+                   "relations": [{k: r.get(k) for k in ("id", "from", "to", "phrase", "cardinality")} for r in cm.get("relations") or [] if isinstance(r, dict)],
+                   "terms": [{k: t.get(k) for k in ("original", "source", "concept", "definition", "aliases", "reason", "standard_term")}
+                             for t in cm.get("terms") or [] if isinstance(t, dict)]})
     lm = m.get("logical_model") or {}
-    return _h({"entities": [{**{k: e.get(k) for k in ("id", "name", "definition", "identifier")},
-                             "attributes": [{k: a.get(k) for k in ("id", "name", "definition")} for a in e.get("attributes") or []],
-                             "concepts": e.get("concepts")} for e in lm.get("entities") or []],
-               "relations": [{k: r.get(k) for k in ("id", "from", "to", "phrase", "cardinality", "optional")} for r in lm.get("relations") or []]})
+    return _h({"scope": lm.get("scope"),
+               "entities": [{**{k: e.get(k) for k in ("id", "name", "definition", "identifier")},
+                             "attributes": [{k: a.get(k) for k in ("id", "name", "definition", "domain", "standard_term")} for a in e.get("attributes") or [] if isinstance(a, dict)],
+                             **{k: e.get(k) for k in ("concepts", "concept_reason", "tech_reason", "not_implemented")}}
+                            for e in lm.get("entities") or [] if isinstance(e, dict)],
+               "relations": [{k: r.get(k) for k in ("id", "from", "to", "phrase", "cardinality", "optional")} for r in lm.get("relations") or [] if isinstance(r, dict)]})
+
+
+def _pending(cm: dict) -> int:
+    """concept_model.py 의 '사용자 검토 대상' 수 (AI 개념 확인 전 · 검토 대기 정리 · 확인 안 된 원문 묶음) -- 있으면 확인됨으로 보이지 않는다."""
+    concepts = [c for c in cm.get("concepts") or [] if isinstance(c, dict)]
+    terms = [t for t in cm.get("terms") or [] if isinstance(t, dict)]
+    n = sum(1 for c in concepts if c.get("origin") == "ai" and c.get("status") != "confirmed")
+    n += sum(1 for t in terms if t.get("status") == "검토 대기")
+    groups = {}
+    for t in terms:
+        if t.get("concept"):
+            groups.setdefault(t["concept"], []).append(t)
+    n += sum(1 for ts in groups.values() if len({t.get("original") for t in ts}) > 1 and any(t.get("status") != "확인" for t in ts))
+    return n
 
 
 def _level_head(m: dict, level: str) -> dict | None:
@@ -189,6 +208,9 @@ def _level_head(m: dict, level: str) -> dict | None:
     st = blk.get("status")
     conf = blk.get("confirmed") if isinstance(blk.get("confirmed"), dict) else {}
     changed = st == "confirmed" and conf.get("hash") != level_hash(m, level)
+    if level == "concept" and st == "confirmed" and not changed and _pending(blk):
+        return {"status": "draft", "label": f"확인됨이었으나 검토 대상 {_pending(blk)}개가 생겼다 -- 정하고 다시 확인", "version": blk.get("version"),
+                "scope": blk.get("scope"), "confirmed_by": None, "confirmed_at": None}
     eff = "draft" if changed else st
     return {"status": eff, "label": STATUS_KO.get(eff, str(eff or "상태 없음")) + (" (확인 뒤 바뀜 -- 다시 확인 필요)" if changed else ""),
             "version": blk.get("version"), "scope": blk.get("scope"), "confirmed_by": conf.get("by") if not changed else None,
