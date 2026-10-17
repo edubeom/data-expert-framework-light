@@ -8,6 +8,8 @@
 - 정의서(spec.md) 맨 위에 "만드는 것"과 사용자 말 · `upgrade --facts data/facts.json` 이 전문판 질문 대장으로 옮김(사용자 답, 원문 = said),
   전문판 `facts.py product` 가 같은 판정을 내는지 시험(DEF_SCRIPTS)
 - SKILL.md 질문 0번 "무엇을 만들어 드릴까요?", dev-process-light 카드의 `데이터:` 줄 → `product`
+- 고침: 가져오기 기록의 백업·원본 경로가 macOS(/var → /private/var)·Windows(짧은 이름 RUNNER~1)에서 폴더를 잃고 파일 이름만 남던 문제
+  (경로 양쪽을 실제 경로로 맞춘 뒤 비교) -- 0.4.0 부터 CI 의 macOS·Windows 가 실패하던 원인. CI 는 실패한 시험을 주석(annotation)으로 남긴다
 - **호환**: 0.4.x 정본은 `product` 를 더해야 `verify` 가 통과한다 -- dev-process-light 의 짝 고정(`data-light.lock.json`)을 올릴 때 함께 안내
 
 ## 0.4.1 — 2026-10-15 · dev-process-light 0.10 3차 요청 (V1~V6)

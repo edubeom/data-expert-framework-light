@@ -1276,9 +1276,11 @@ def _slug(h: str) -> str | None:
 def _project_path(path: str) -> tuple[str, bool]:
     """path relative to the project (cwd), so plans and logs never carry the user's own folder names.
     returns (path_to_store, inside_project)"""
-    ab = os.path.abspath(path)
+    # realpath on both sides: macOS temp folders are /var -> /private/var symlinks and Windows may give
+    # 8.3 short names (RUNNER~1) for one side only -- without this the path looked "outside" and lost its folder
+    ab = os.path.realpath(path)
     try:
-        rel = os.path.relpath(ab, os.getcwd())
+        rel = os.path.relpath(ab, os.path.realpath(os.getcwd()))
     except ValueError:                         # another drive on Windows
         return Path(ab).name, False
     if rel.startswith(".."):

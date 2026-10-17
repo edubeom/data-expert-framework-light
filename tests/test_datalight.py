@@ -971,6 +971,21 @@ class V05(unittest.TestCase):
                 self.assertEqual(json.loads(r.stdout)["primary"], "data_management")
 
 
+class PathFix(unittest.TestCase):
+    @unittest.skipUnless(hasattr(os, "symlink") and os.name == "posix", "symlink 시험은 posix 에서")
+    def test_project_path_through_symlinked_folder(self):
+        """macOS 의 /var -> /private/var 처럼 한쪽만 실제 경로여도 프로젝트 안 경로로 본다 (0.4.0~0.4.1 CI 실패 원인)"""
+        with tempfile.TemporaryDirectory() as d:
+            real = Path(d) / "real"
+            (real / "data" / "backup").mkdir(parents=True)
+            link = Path(d) / "link"
+            os.symlink(real, link)
+            with cwd(real):
+                self.assertEqual(dl._project_path(str(link / "data" / "backup" / "x.db")), ("data/backup/x.db", True))
+            with cwd(link):
+                self.assertEqual(dl._project_path(str(real / "data" / "x.csv")), ("data/x.csv", True))
+
+
 class Cli(unittest.TestCase):
     def test_check_exit_codes(self):
         self.assertEqual(run("check", SHOP).returncode, 0)
