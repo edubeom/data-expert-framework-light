@@ -91,6 +91,8 @@ class Viewer:
             view.update(id=sid, kind=kind, path=src.display, name=src.name)
             saved = layout.load(src.layout_base)
             view["layout_saved"] = bool(saved)
+            view["layout"] = layout.load_all(src.layout_base)          # 단계별 위치·고정·직전 배치 (화면이 단계마다 쓴다)
+            view.setdefault("levels", {"concept": None, "logical": None})
             view["layout_file"] = layout.layout_path(src.layout_base).name
             tables = []
             for t in view["tables"]:                # file_pos: 원본(.dbm)에 적힌 위치, pos: 화면에 쓸 위치
@@ -112,15 +114,23 @@ class Viewer:
             return {"viewer_version": __version__, "version": self.version,
                     "sources": [self._views[s.id] for s in self.sources]}
 
-    def save_layout(self, source_id: str, positions) -> dict:
+    def save_layout(self, source_id: str, positions, stage: str = "physical", pinned=None, previous=None, algo=None) -> dict:
         with self._lock:
             view = self._views.get(source_id)
         src = next((s for s in self.sources if s.id == source_id), None)
         if view is None or src is None:
             raise layout.LayoutError("모르는 원본이다")
-        clean = layout.save(src.layout_base, positions, [t["key"] for t in view["tables"]])
+        if stage == "physical":
+            known = [t["key"] for t in view["tables"]]
+        else:
+            lv = (view.get("levels") or {}).get(stage)
+            if not lv:
+                raise layout.LayoutError(f"이 원본에는 {stage} 모델이 없다 (미작성)")
+            known = [n["key"] for n in lv["nodes"]]
+        with self._refresh_lock:
+            clean = layout.save(src.layout_base, positions, known, stage=stage, pinned=pinned, previous=previous, algo=algo)
         self.refresh()
-        return {"saved": len(clean), "file": layout.layout_path(src.layout_base).name}
+        return {"saved": len(clean), "file": layout.layout_path(src.layout_base).name, "stage": stage}
 
     # ---------------------------------------------------------------- 지켜보기
     def wait_change(self, seen: int, timeout: float) -> int:
@@ -152,13 +162,17 @@ class Viewer:
             self._changed.notify_all()
 
 
+def html_attr(s: str) -> str:
+    return str(s).replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def page(*, token: str, base: str = "", live: bool = True, save: bool = True, nonce: str | None = None) -> tuple[str, str]:
     """화면 HTML 과 CSP 헤더 값. save=False 면 옮긴 위치를 이 화면에서만 쓴다 (저장하지 않는다)."""
     nonce = nonce or secrets.token_urlsafe(16)
     html = (STATIC / "viewer.html").read_text(encoding="utf-8")
     cfg = json.dumps({"token": token, "base": base, "live": live, "save": save, "version": __version__})
-    html = html.replace("__NONCE__", nonce).replace("__CONFIG__", cfg.replace("</", "<\\/"))
-    csp = (f"default-src 'none'; script-src 'nonce-{nonce}'; style-src 'nonce-{nonce}'; connect-src 'self'; "
+    html = html.replace("__NONCE__", nonce).replace("__BASE__", html_attr(base)).replace("__CONFIG__", cfg.replace("</", "<\\/"))
+    csp = (f"default-src 'none'; script-src 'nonce-{nonce}'; style-src 'nonce-{nonce}'; connect-src 'self'; worker-src 'self'; "
            "img-src 'self' data: blob:; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'")
     return html, csp
 
@@ -196,6 +210,8 @@ def make_server(viewer: Viewer, host: str = "127.0.0.1", port: int = 8820, *, li
             if path in ("/", "/index.html"):
                 html, csp = page(token=token, live=live)
                 return self._send(200, html, "text/html; charset=utf-8", {"Content-Security-Policy": csp, "Referrer-Policy": "no-referrer"})
+            if path == "/erdlayout.js":                      # 배치 계산 (화면 스크립트 + Worker 가 같은 파일)
+                return self._send(200, (STATIC / "erdlayout.js").read_bytes(), "text/javascript; charset=utf-8")
             if path == "/api/model":
                 return self._send(200, viewer.model())
             if path == "/api/events":
@@ -242,11 +258,12 @@ def make_server(viewer: Viewer, host: str = "127.0.0.1", port: int = 8820, *, li
             if path == "/api/layout":
                 try:
                     body = json.loads(raw.decode("utf-8") or "{}")
-                    out = viewer.save_layout(str(body.get("source") or ""), body.get("positions"))
+                    out = viewer.save_layout(str(body.get("source") or ""), body.get("positions"), str(body.get("stage") or "physical"),
+                                             body.get("pinned"), body.get("previous"), body.get("algo"))
                 except (UnicodeDecodeError, json.JSONDecodeError, AttributeError):
                     return self._send(400, {"error": "JSON 이 아니다"})
-                except layout.LayoutError as exc:
-                    return self._send(400, {"error": str(exc)})
+                except (layout.LayoutError, TypeError, ValueError) as exc:
+                    return self._send(400, {"error": str(exc) if isinstance(exc, layout.LayoutError) else "위치 요청 형식이 맞지 않다"})
                 return self._send(200, out)
             return self._send(404, {"error": "없는 주소"})
 

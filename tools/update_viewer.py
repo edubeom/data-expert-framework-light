@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DEST = ROOT / "skills" / "data-light" / "viewer"
 LOCK = DEST / "viewer.lock.json"
 SRC = "runtime/viewer/dataviewer"
-FILES = ("__init__.py", "__main__.py", "layout.py", "server.py", "sources.py", "static/viewer.html")
+FILES = ("__init__.py", "__main__.py", "layout.py", "server.py", "sources.py", "static/viewer.html", "static/erdlayout.js")
 
 
 def _sha(b: bytes) -> str:
