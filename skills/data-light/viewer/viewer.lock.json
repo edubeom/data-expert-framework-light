@@ -1,14 +1,14 @@
 {
   "about": "data-expert-framework 의 runtime/viewer/dataviewer 사본 (바이트 그대로). 고치지 않는다 -- 원본에서 고치고 tools/update_viewer.py 로만 바꾼다.",
   "source": "sungbeom78/data-expert-framework (runtime/viewer)",
-  "commit": "258a747d7512b7c5a9cbaf7dc2b727ce89716299",
+  "commit": "1c9438c605c36e24feb294ec380fdbd010921288",
   "version": "0.8.0",
   "files": {
     "__init__.py": "fd5f164f671891b7e02dfb0010a9a5c4c2c2a2384a787b4852bb52f9b3d4c6b3",
     "__main__.py": "3bbe39c0a90d29aa277fae29ce10f9188585677b520d721596479f8a4096b9f8",
     "layout.py": "41c183bf34b81b0ead2b9c99210aa1ab3e8b9f9a6784b9aa16d99a9bd41b08ec",
     "server.py": "82d99fe02909c6665e2cbc349581938e4d6a0488678068bb20060ea23f0fe930",
-    "sources.py": "ce0011bcc6d061fcc3e97fbde3ea10837ecd46fd14996c420df99e1a93508bc8",
+    "sources.py": "733abf41d9ab778d712fcaf3be84a7f5df12c2ed63796981bd30eb0c77a94433",
     "static/viewer.html": "1c3e2ed0561900c72c9592f5debae4a38b398ae008977e56ac6cda5b32607d23"
   }
 }

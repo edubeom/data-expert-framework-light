@@ -1695,6 +1695,7 @@ def view(model: str, *, port: int = 8820, open_browser: bool = True, watch: bool
     if not Path(model).is_file():
         print(f"정본이 없습니다: {model}")
         return 1
+    sys.dont_write_bytecode = True               # 설치된 스킬 폴더에 __pycache__ 를 남기지 않는다
     if str(VIEWER_DIR) not in sys.path:
         sys.path.insert(0, str(VIEWER_DIR))
     from dataviewer.__main__ import main as viewer_main  # noqa: E402 -- 표준 라이브러리만 쓰는 사본

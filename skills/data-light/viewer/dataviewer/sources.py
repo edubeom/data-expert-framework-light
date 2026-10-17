@@ -341,14 +341,41 @@ _PG_SQL = {
 }
 
 
+def split_dsn(spec: str) -> tuple[str, list | None]:
+    """'postgresql://…#스키마,스키마' -> (접속 문자열, 스키마). 비밀번호에 '#' 이 있을 수 있어 마지막 '#' 에서 나누고,
+    뒤가 스키마 이름 모양(글자·숫자·밑줄·쉼표)이 아니면 나누지 않는다 (비밀번호 조각을 스키마로 보이지 않게)."""
+    head, sep, tail = spec.rpartition("#")
+    if sep and re.fullmatch(r"[A-Za-z_][\w$]*(\s*,\s*[A-Za-z_][\w$]*)*", tail.strip()):
+        return head, [x.strip() for x in tail.split(",") if x.strip()]
+    return spec, None
+
+
+def _secrets(dsn: str) -> list[str]:
+    try:
+        pw = urlsplit(dsn).password
+    except ValueError:
+        pw = None
+    raw = re.match(r"^[a-z]+://[^:/@]*:([^@]*)@", dsn)
+    out = {x for x in (pw, unquote(pw) if pw else None, raw.group(1) if raw else None) if x}
+    return sorted(out, key=len, reverse=True)
+
+
+def scrub(text: str, dsn: str) -> str:
+    """오류 문장에서 비밀번호(그대로·풀어 쓴 것)를 가린다."""
+    for s_ in _secrets(dsn):
+        text = text.replace(s_, "***")
+    return text
+
+
 def mask_dsn(dsn: str) -> str:
     """화면·기록에 쓸 이름 -- 비밀번호와 접속 옵션(쿼리)은 빼고 사용자@호스트:포트/DB 만."""
-    u = urlsplit(dsn.split("#", 1)[0])
-    host = u.hostname or "localhost"
     try:
-        port = f":{u.port}" if u.port else ""
+        u = urlsplit(split_dsn(dsn)[0])
+        _ = u.port
     except ValueError:
-        port = ""
+        return "postgresql://(접속 문자열을 읽을 수 없다)"
+    host = u.hostname or "localhost"
+    port = f":{u.port}" if u.port else ""
     user = f"{unquote(u.username)}@" if u.username else ""
     return f"postgresql://{user}{host}{port}{u.path or '/'}"
 
@@ -369,13 +396,15 @@ def read_pg(dsn: str, schemas: list | None = None) -> dict:
     except ImportError:
         raise SourceError("실제 DB 를 읽으려면 psycopg 가 필요하다 (pip install 'psycopg[binary]')") from None
     try:
-        with psycopg.connect(dsn.split("#", 1)[0], connect_timeout=5, autocommit=False) as con:
+        with psycopg.connect(dsn, connect_timeout=5, autocommit=False, options="-c statement_timeout=10000") as con:
             con.execute("SET TRANSACTION READ ONLY")
             rows = {k: con.execute(q).fetchall() for k, q in _PG_SQL.items()}
             con.rollback()
     except psycopg.Error as exc:
         msg = str(exc).strip().splitlines()[0] if str(exc).strip() else type(exc).__name__
-        raise SourceError(f"DB 에 접속하거나 읽을 수 없다 ({mask_dsn(dsn)}): {msg}") from None
+        raise SourceError(f"DB 에 접속하거나 읽을 수 없다 ({mask_dsn(dsn)}): {scrub(msg, dsn)}") from None
+    except Exception as exc:  # noqa: BLE001 -- 접속 문자열 해석 오류 등도 비밀번호 없이
+        raise SourceError(f"DB 에 접속하거나 읽을 수 없다 ({mask_dsn(dsn)}): {scrub(type(exc).__name__ + ': ' + str(exc), dsn)}") from None
     keep = (lambda sch: sch not in SYSTEM_SCHEMAS and (not schemas or sch in schemas))
     tables = {}
     for sch, name, comment in rows["tables"]:
@@ -417,8 +446,7 @@ def read_pg(dsn: str, schemas: list | None = None) -> dict:
     for r in rels:
         pks = [c["name"] for c in tables[r["from"]]["columns"] if c["pk"]]
         r["one_to_one"] = pks == r["from_cols"]
-    u = urlsplit(dsn.split("#", 1)[0])
-    return {"project": (u.path or "/").strip("/") or mask_dsn(dsn), "tables": list(tables.values()), "relations": _finish_rels(rels)}
+    return {"project": mask_dsn(dsn).rsplit("/", 1)[-1] or mask_dsn(dsn), "tables": list(tables.values()), "relations": _finish_rels(rels)}
 
 
 READERS = {"model": read_model, "xlsx": read_xlsx, "dbm": read_dbm}
@@ -463,15 +491,12 @@ class DbSource:
     def __init__(self, dsn: str, *, layout_dir=None, db_poll: float = 5.0):
         if not is_db(dsn):
             raise SourceError("DB 원본은 postgresql:// 로 시작한다")
-        self.dsn = dsn
-        frag = dsn.split("#", 1)[1] if "#" in dsn else ""
-        self.schemas = [x.strip() for x in frag.split(",") if x.strip()] or None
+        self.dsn, self.schemas = split_dsn(dsn)
         self.kind = "db"
-        self.display = mask_dsn(dsn) + (f" ({', '.join(self.schemas)})" if self.schemas else "")
+        self.display = mask_dsn(self.dsn) + (f" ({', '.join(self.schemas)})" if self.schemas else "")
         self.id = hashlib.sha1(self.display.encode("utf-8")).hexdigest()[:10]
-        u = urlsplit(dsn.split("#", 1)[0])
-        dbname = (u.path or "/").strip("/") or "db"
-        safe = re.sub(r"[^\w.-]+", "_", f"{u.hostname or 'localhost'}_{dbname}")
+        hostdb = mask_dsn(self.dsn).split("@")[-1].replace("postgresql://", "")
+        safe = re.sub(r"[^\w.-]+", "_", hostdb).strip("_") or "db"
         self.name = self.display
         self.layout_base = Path(layout_dir or os.getcwd()).resolve() / f"{safe}.db"
         self.db_poll = db_poll
