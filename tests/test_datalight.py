@@ -156,7 +156,7 @@ class Build(unittest.TestCase):
     def test_build_files(self):
         with tempfile.TemporaryDirectory() as d:
             files = dl.build(shop(), d)
-            for f in ("schema.sql", "erd.md", "spec.md"):
+            for f in ("schema.sql", "erd.md", "spec.md", "book.html"):
                 self.assertIn(f, files)
                 self.assertTrue((Path(d) / f).stat().st_size > 0)
             erd = (Path(d) / "erd.md").read_text(encoding="utf-8")
@@ -168,9 +168,97 @@ class Build(unittest.TestCase):
         """examples/shop/data/out must match the model (rebuild after editing the example)"""
         with tempfile.TemporaryDirectory() as d:
             dl.build(shop(), d)
-            for f in ("schema.sql", "erd.md", "spec.md"):
+            for f in ("schema.sql", "erd.md", "spec.md", "book.html"):
                 self.assertEqual((Path(d) / f).read_text(encoding="utf-8"),
                                  (SHOP.parent / "out" / f).read_text(encoding="utf-8"), f)
+
+
+class Works(unittest.TestCase):
+    """하는 일(works) -- 누가 · 어느 화면에서 · 어느 표를 만들고·읽고·고치고·지우나. 표마다 왜 있는지가 여기서 나온다."""
+
+    def test_example_works_cover_every_table(self):
+        errs, warns = dl.check(shop())
+        self.assertEqual((errs, warns), ([], []))
+
+    def test_works_rules(self):
+        m = shop()
+        m["works"][0]["uses"]["nope"] = "C"
+        m["works"][1]["uses"]["dish"] = "X"
+        m["works"].append({"who": "누구"})
+        errs, _ = dl.check(m)
+        self.assertTrue(any("없는 표 'nope'" in e for e in errs), errs)
+        self.assertTrue(any("C(만들기)·R(읽기)" in e for e in errs), errs)
+        self.assertTrue(any("name(무슨 일인지 한 줄)" in e for e in errs), errs)
+        m = shop()
+        m["works"] = [w for w in m["works"] if w["name"] != "반찬 관리"]
+        for w in m["works"]:
+            w["uses"].pop("dish", None)
+        _, warns = dl.check(m)
+        self.assertTrue(any("테이블 dish: 이 표를 쓰는 일이 없습니다" in w for w in warns), warns)
+        self.assertFalse(any("pi_customer" in w for w in warns))                     # 짝 표는 본 표의 일을 따른다
+        m["works"] = m["works"] * 2
+        _, warns = dl.check(m)
+        self.assertTrue(any("7개 이하로" in w for w in warns))
+        m = shop()
+        del m["works"]                                                                  # 하는 일은 고르는 항목 -- 없어도 검사는 그대로
+        self.assertEqual(dl.check(m), ([], []))
+
+    def test_book_is_plain_and_escaped(self):
+        h = dl.book_html(shop())
+        for want in ("이 문서 읽는 법", "하는 일", "주문 받기", "주문 -- 만들기", "이 표를 쓰는 일", "누가 쓰나", "예시 (만든 값)",
+                     "개인정보 짝 표", "<b>손님</b> 한 줄을 가리킵니다", "알고 싶은 것", "이번에 만들지 않을 것"):
+            self.assertIn(want, h)
+        m = shop()
+        m["project"] = "<script>alert(1)</script>"
+        m["works"][0]["say"] = "<img src=x onerror=alert(1)>"
+        h = dl.book_html(m)
+        self.assertNotIn("<script>alert", h)
+        self.assertNotIn("<img src=x", h)
+        self.assertEqual(dl.book_html(shop()), dl.book_html(shop()))                   # 시각 없음 -- 정본이 같으면 같은 파일
+        del m["works"]
+        self.assertIn("하는 일(works)이 적혀 있지 않습니다", dl.book_html(m))
+
+    def test_verify_finds_stale_book(self):
+        with tempfile.TemporaryDirectory() as d:
+            mp = Path(d) / "data" / "model.light.json"
+            mp.parent.mkdir()
+            shutil.copy(SHOP, mp)
+            dl.build(dl.load(mp), mp.parent / "out")
+            m = dl.load(mp)
+            m["works"][0]["name"] = "주문 받기 (전화)"
+            dl.save(m, mp)
+            self.assertIn("book.html", dl.stale_outputs(dl.load(mp), mp.parent / "out"))
+
+    def test_upgrade_blueprint(self):
+        bp = dl.upgrade_blueprint(shop())
+        self.assertEqual(bp["blueprint_version"], "1")
+        self.assertEqual([f["name"] for f in bp["features"]][:2], ["주문 받기", "손님 관리"])
+        self.assertEqual(bp["system"]["roles"], [{"id": "role-1", "name": "사장님"}])
+        scr = {s["name"]: s for s in bp["screens"]}
+        self.assertEqual(scr["주문 입력"]["for"], ["role-1"])
+        self.assertEqual(bp["features"][0]["screens"], [scr["주문 입력"]["id"]])
+        self.assertIn("orders 만들기", bp["features"][0]["description"])
+        with tempfile.TemporaryDirectory() as d:
+            r = run("upgrade", SHOP, "--out", Path(d) / "model.json", "--blueprint", Path(d) / "blueprint.json")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("시스템 청사진", r.stdout)
+            r = run("upgrade", SHOP, "--out", Path(d) / "m2.json", "--blueprint", Path(d) / "blueprint.json")
+            self.assertEqual(r.returncode, 1)                                          # 있는 청사진은 덮지 않는다
+
+    @unittest.skipUnless(os.environ.get("DEF_SCRIPTS"), "DEF_SCRIPTS (전문판 scripts 경로) 미설정")
+    def test_full_framework_reads_the_blueprint(self):
+        sd = Path(os.environ["DEF_SCRIPTS"])
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "db").mkdir()
+            (Path(d) / "data").mkdir()
+            dl.save(dl.upgrade(shop(), pi_schema="pi"), Path(d) / "db" / "model.json")
+            dl.save(dl.upgrade_blueprint(shop()), Path(d) / "data" / "blueprint.json")
+            r = subprocess.run([sys.executable, str(sd / "systembook.py"), "json", "--root", d], capture_output=True, text=True, encoding="utf-8")
+            self.assertEqual(r.returncode, 0, r.stdout[-500:] + r.stderr[-500:])
+            book = json.loads(r.stdout)
+            self.assertEqual(book["counts"]["features"], 5)
+            self.assertFalse([p for p in book["problems"] if p["level"] == "error" and p["page"] in ("overview", "features")],
+                             [p["message"] for p in book["problems"] if p["level"] == "error"])
 
 
 class Try(unittest.TestCase):

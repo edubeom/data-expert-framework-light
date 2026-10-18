@@ -47,6 +47,60 @@
     "배송 추적",
     "회원 로그인"
   ],
+  "works": [
+    {
+      "name": "주문 받기",
+      "who": "사장님",
+      "say": "손님이 전화로 주문하면 반찬과 수량을 적는다",
+      "screen": "주문 입력",
+      "uses": {
+        "orders": "C",
+        "order_item": "C",
+        "customer": "R",
+        "dish": "R"
+      }
+    },
+    {
+      "name": "손님 관리",
+      "who": "사장님",
+      "say": "단골 손님의 별명·연락처를 적고 고친다",
+      "screen": "손님 목록",
+      "uses": {
+        "customer": "CRU",
+        "pi_customer": "CRU"
+      }
+    },
+    {
+      "name": "반찬 관리",
+      "who": "사장님",
+      "say": "반찬과 값, 오늘 파는지를 정한다",
+      "screen": "반찬 목록",
+      "uses": {
+        "dish": "CRU"
+      }
+    },
+    {
+      "name": "주문 상태 바꾸기",
+      "who": "사장님",
+      "say": "접수 → 준비 → 전달로 상태를 바꾼다",
+      "screen": "주문 목록",
+      "uses": {
+        "orders": "RU",
+        "order_item": "R"
+      }
+    },
+    {
+      "name": "매출 보기",
+      "who": "사장님",
+      "say": "손님별·상태별 주문 금액을 본다",
+      "screen": "매출",
+      "uses": {
+        "orders": "R",
+        "order_item": "R",
+        "customer": "R"
+      }
+    }
+  ],
   "tables": [
     {
       "name": "customer",

@@ -14,19 +14,20 @@ description: 비전공자·작은 시스템을 위한 쉬운 데이터 설계. "
 |---|---|
 | `check <model>` | 설계 검사 (키·참조·필수·선택값·이름·개인정보 위치) |
 | `split <model> --write` | 개인정보 칸을 `pi_<테이블>` 로 옮김 |
-| `build <model> [--db postgresql]` | `data/out/` 에 schema.sql · erd.md · spec.md (+spec.xlsx) |
+| `build <model> [--db postgresql]` | `data/out/` 에 schema.sql · erd.md · spec.md · **book.html(데이터 설명서)** (+spec.xlsx) |
 | `view [<model>]` | 웹 ERD 그림을 브라우저로 (보기 전용) -- 표를 끌어 옮기고(위치는 `model.light.json.layout.json`), 테마·보기 단계·선택한 표만, 정본을 고치면 곧바로 다시 그림 |
 | `try <model>` | SQLite 에서 실제로 만들고 샘플을 넣고, 규칙이 나쁜 값을 막는지 확인 |
 | `import plan <csv/xlsx> --table 이름` → `import apply …` | 파일을 테이블로 (사용자 확인 후) |
 | `import schema data/app.db` | 이미 있는 SQLite DB 에서 정본 초안 (이름표는 비어 있음) |
 | `verify <model> [--mutate]` | **통과/실패 관문** — 설계 검사 + 성공 기준 + 규칙 + `out/` 최신 + DB 데이터 보호 (exit 0/1) |
 | `hook install [--no-ci] [--append]` · `hook status` | 커밋할 때마다 `verify` 자동 실행 + GitHub CI 파일 + `.gitignore` · 설치된 버전 확인 |
-| `upgrade <model>` | 전문판(data-expert-framework) model.json 으로 졸업 |
+| `upgrade <model> [--facts …] [--blueprint …]` | 전문판(data-expert-framework) model.json 으로 졸업 (만드는 것 → 질문 대장, 하는 일 → 시스템 청사진) |
 
 **원칙 — "확인해 줘" 대신 확인할 수단을 남긴다.** 무엇이 되면 완성인지(성공 기준)를 먼저 정해 정본에 쿼리로 적고,
 `verify` 가 통과해야 끝이다. 지시를 기억하는 대신 도구가 막는다.
 
 형식은 [references/format.md](references/format.md), dev-process-light 와 함께 쓸 때는 [references/with-dev-process-light.md](references/with-dev-process-light.md).
+사용자가 모르는 말(표·칸·가리키는 칸·개인정보 짝 표·성공 기준 …)이 나오면 [references/guide.md](references/guide.md) 의 풀이를 **사용자의 일에 빗대어** 한두 줄로.
 
 ## 흐름: 이해 → 설계 → 확인 → 만들기 → 넣기
 
@@ -66,9 +67,11 @@ description: 비전공자·작은 시스템을 위한 쉬운 데이터 설계. "
 - 일부러 정본에 넣지 않는 표(데이터가 든 기록 표 등)는 `"outside": ["log"]` -- `verify` 의 데이터 보호 검사에서 빠진다.
 - **성공 기준(`goals`)** — 1번 답을 한 문장(`say`) + 확인 쿼리(`sql`) + 샘플로 나와야 할 결과(`expect`)로. **설계보다 먼저** 쓴다.
 - **만들지 않을 것(`not_doing`)** — 범위 밖. 그 이름의 테이블이 생기면 `check` 가 막는다.
+- **하는 일(`works`)** 3~7개 — 1·2번 답에서 Claude 가 정리한다: 일 이름 · 누가 · 화면 · 쓰는 표와 그 표에 하는 일(C 만들기 · R 읽기 · U 고치기 · D 지우기).
+  표마다 "왜 있나 · 누가 쓰나"가 여기서 나온다 (`check` 가 쓰는 일이 없는 표를 알린다). 묻지 않고 정리해 설명서로 보여 주며 확인받는다.
 
 ### 3. 확인 — 사용자에게 보여 주기
-`build` → `verify` 를 돌리고(통과할 때까지 Claude 가 고치며 반복), **사용자에게는 ERD 그림(erd.md 의 Mermaid, 표가 많으면 `view` 의 웹 그림)·성공 기준 결과·표 하나**로 보여 준다:
+`build` → `verify` 를 돌리고(통과할 때까지 Claude 가 고치며 반복), **사용자에게는 데이터 설명서(`out/book.html` -- 하는 일 → 화면 → 표 → 예시)·ERD 그림(erd.md 의 Mermaid, 표가 많으면 `view` 의 웹 그림)·성공 기준 결과**로 보여 준다:
 "손님 한 명이 주문을 여러 번 할 수 있고, 주문 하나에 반찬이 여러 개 담깁니다. 맞나요?"
 기술 용어(PK·FK·정규화)는 쓰지 않거나, 쓰면 바로 풀어 쓴다 (예: "다른 표를 가리키는 칸").
 FAIL 은 Claude 가 고치고 다시 돌린다. 사용자에게 고치라고 하지 않는다.

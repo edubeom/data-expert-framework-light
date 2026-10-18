@@ -9,12 +9,13 @@ Commands
   check   <model>                         check the design (exit 0 ok / 1 problems)
   split   <model> [--write]               move personal-info columns into pi_<table>
   build   <model> [--out DIR] [--db sqlite|postgresql]
-                                          schema.sql, erd.md, spec.md (+ spec.xlsx if openpyxl)
+                                          schema.sql, erd.md, spec.md, book.html (+ spec.xlsx if openpyxl)
   try     <model>                         run the schema + sample rows in SQLite and probe the rules
   import plan  <file> --table NAME [--label 한글] [--sheet S] [--out plan.json]
   import apply <plan.json> --model <model> --db data/app.db --approval "<사용자 답 그대로>"
-  upgrade <model> [--out model.json] [--schema app] [--pi-schema pi] [--facts facts.json]
-                                          convert to the full framework's model.json (+ question ledger for product)
+  upgrade <model> [--out model.json] [--schema app] [--pi-schema pi] [--facts facts.json] [--blueprint blueprint.json]
+                                          convert to the full framework's model.json (+ question ledger for product,
+                                          + system blueprint for works)
   verify  <model> [--db app.db|--no-db] [--mutate]
                                           one pass/fail gate: check + goals + rules + out/ fresh + DB safety
   hook install [--repo .] [--no-ci] [--append]
@@ -35,6 +36,7 @@ from __future__ import annotations
 import argparse
 import csv
 import datetime as dt
+import html
 import io
 import json
 import os
@@ -44,7 +46,7 @@ import sys
 from pathlib import Path
 
 FORMAT = "data-light/1"
-__version__ = "0.6.4"
+__version__ = "0.7.0"
 NAME = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 TYPES = ("id", "ref", "text", "long_text", "int", "number", "money", "bool", "date", "datetime", "owner")
 ACCESS = ("members", "own", "read")
@@ -67,6 +69,8 @@ ON_DELETE = {"keep": "RESTRICT", "delete": "CASCADE", "clear": "SET NULL"}
 PRODUCT_KINDS = {"design": ("설계까지", "modeling_files"), "load": ("파일·엑셀 넣기", "ingest_pipeline"),
                  "manage": ("데이터 관리 (찾고·고치기)", "data_management"), "analyze": ("알고 싶은 것 보기 (분석)", "analytics_bi")}
 UNDETERMINED = "유형 미정"
+OPS_KO = {"C": "만들기", "R": "읽기", "U": "고치기", "D": "지우기"}
+WORKS_MAX = 7                                       # 하는 일은 3~7개 -- 더 많으면 묶는다
 PERSONAL_KINDS = ("name", "phone", "email", "address", "birth", "id_number", "account", "health", "photo", "location", "other")
 
 
@@ -333,6 +337,39 @@ def check(model: dict) -> tuple[list[str], list[str]]:
         for o in outside:
             if o in names:
                 err.append(f"outside 의 '{o}' 는 정본에도 있습니다 -- 둘 중 하나만")
+    works = model.get("works")
+    if works is not None:
+        if not isinstance(works, list):
+            err.append("works(하는 일)는 목록이어야 합니다 (예: [{\"name\": \"주문 받기\", \"who\": \"사장님\", \"uses\": {\"orders\": \"C\"}}])")
+        else:
+            used = set()
+            for i, w in enumerate(works, 1):
+                ww = f"하는 일 {i}"
+                if not isinstance(w, dict) or not str(w.get("name") or "").strip():
+                    err.append(f"{ww}: name(무슨 일인지 한 줄)이 필요합니다")
+                    continue
+                ww = f"하는 일 '{w['name']}'"
+                uses = w.get("uses") or {}
+                if not isinstance(uses, dict):
+                    err.append(f"{ww}: uses 는 {{표 이름: \"CRUD 중 글자\"}} 입니다 (예: {{\"orders\": \"CR\"}})")
+                    continue
+                for tname, ops in uses.items():
+                    if tname not in names:
+                        err.append(f"{ww}: 없는 표 '{tname}' 를 씁니다")
+                    elif not isinstance(ops, str) or not ops or set(ops.upper()) - set(OPS_KO):
+                        err.append(f"{ww}: '{tname}' 에 하는 일은 C(만들기)·R(읽기)·U(고치기)·D(지우기) 글자로 (예: \"CR\")")
+                    else:
+                        used.add(tname)
+                if not uses:
+                    warn.append(f"{ww}: 어느 표를 쓰는지(uses)가 없습니다 -- 이 일이 만들고·읽고·고치고·지우는 표를 적어 주세요")
+            if len(works) > WORKS_MAX:
+                warn.append(f"하는 일이 {len(works)}개입니다 -- 7개 이하로 묶으면 사용자가 보기 쉽습니다")
+            if works:
+                for t in tb:
+                    tn = t.get("name")
+                    base = tn[3:] if isinstance(tn, str) and tn.startswith("pi_") else tn
+                    if tn not in used and base not in used:
+                        warn.append(f"테이블 {tn}: 이 표를 쓰는 일이 없습니다 -- 하는 일(works)의 uses 에 적거나, 필요 없는 표인지 사용자와 봅니다")
     # cycles in required refs
     tbm = tables(model)
 
@@ -696,11 +733,133 @@ def spec_xlsx(model: dict, path) -> bool:
     return True
 
 
+BOOK_CSS = """body{margin:0;background:#f6f5f1;color:#1f2328;font:16px/1.7 "Pretendard","Noto Sans KR","Apple SD Gothic Neo","Malgun Gothic",system-ui,sans-serif}
+main{max-width:860px;margin:0 auto;padding:28px 20px 80px}h1{font-size:28px;margin:0}h1+p{color:#5b636d;margin:4px 0 18px}
+h2{font-size:20px;margin:34px 0 10px;padding-top:14px;border-top:1px solid #dcd9d0}h3{font-size:18px;margin:26px 0 4px}h3 small{font-weight:400;color:#6b7280;font-size:13px}
+details{background:#fff;border:1px solid #dcd9d0;border-left:4px solid #2f7d6d;border-radius:6px;padding:8px 14px}summary{cursor:pointer;font-weight:600}
+table{border-collapse:collapse;width:100%;background:#fff;margin:6px 0 10px;font-size:14px}th,td{border:1px solid #e3e0d8;padding:6px 8px;text-align:left;vertical-align:top}
+th{background:#efede6;font-weight:600}.mut{color:#6b7280}.say{font-size:17px}.tag{display:inline-block;font-size:12px;border:1px solid #c9c5ba;border-radius:10px;padding:0 8px;margin:0 4px 2px 0;background:#fff}
+.pi{color:#a3332a}.miss{color:#9a6700}ul{padding-left:22px}@media print{details{border-left-width:1px}}"""
+
+
+def _e(x) -> str:
+    return html.escape("" if x is None else str(x))
+
+
+def _cellv(c: dict, v):
+    if c.get("type") == "bool" and isinstance(v, bool):
+        return "예" if v else "아니오"
+    return v
+
+
+def _ops(s: str) -> str:
+    return "·".join(OPS_KO[o] for o in "CRUD" if o in str(s).upper())
+
+
+def book_html(model: dict) -> str:
+    """쉬운 데이터 설명서 -- 무엇을 만들고, 어떤 일에 어느 표를 쓰고, 표마다 왜 있고 누가 쓰고 어떤 값이 들어가나 (전문판 시스템 설계서의 쉬운 부분집합).
+    시각을 넣지 않는다 -- 정본이 같으면 같은 파일 (verify 가 낡은 out/ 을 찾는다)."""
+    tb = ordered(model)
+    T = tables(model)
+    works = [w for w in model.get("works") or [] if isinstance(w, dict) and w.get("name")]
+    lab = lambda n: (T.get(n) or {}).get("label") or n  # noqa: E731
+    used_by: dict[str, list] = {}
+    for w in works:
+        for tn, ops in (w.get("uses") or {}).items():
+            used_by.setdefault(tn, []).append((w, ops))
+    o = [f'<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+         f"<title>{_e(model.get('project'))} -- 데이터 설명서</title><style>{BOOK_CSS}</style></head><body><main>",
+         f"<h1>{_e(model.get('project'))}</h1><p>데이터 설명서 -- 무엇을 기록하고, 어떤 일에 쓰고, 실제로 어떤 값이 들어가나</p>",
+         "<details open><summary>이 문서 읽는 법</summary><ul>",
+         "<li><b>표</b>는 엑셀 시트 하나, <b>한 줄</b>은 기록 하나(손님 한 명, 주문 한 건), <b>칸</b>은 열입니다.</li>",
+         "<li><b>다른 표를 가리키는 칸</b>은 표끼리 잇습니다 -- 예: 주문의 '손님' 칸은 손님 표의 한 줄을 가리킵니다.</li>",
+         "<li><b>개인정보</b>(이름·전화 …)는 짝 표에 따로 둡니다. 본 줄을 지우면 같이 지워집니다.</li>",
+         "<li><b>알고 싶은 것</b>은 이 데이터로 꼭 나와야 하는 답입니다. 검사가 예시 값으로 실제로 돌려 봅니다.</li>",
+         "<li><b>예시 값은 만든 값</b>입니다 (실제 사람이 아닙니다).</li></ul>",
+         "<p><b>확인할 것</b>: 빠진 기록이나 칸이 없나요? 하는 일과 표의 연결이 실제와 같나요? 예시를 보면 이상한 곳이 있나요?</p></details>"]
+    p = model.get("product")
+    if isinstance(p, dict) and p.get("kinds"):
+        main = product_main(model)
+        rest = [PRODUCT_KINDS[k][0] for k in p["kinds"] if k != main and k in PRODUCT_KINDS]
+        o.append(f"<h2>무엇을 만드나</h2><p class='say'><b>{_e(PRODUCT_KINDS.get(main, (main,))[0])}</b>" + (f" (함께: {_e(', '.join(rest))})" if rest else "")
+                 + f"</p><p class='mut'>사용자가 한 말: “{_e(p.get('said'))}”</p>")
+    else:
+        o.append(f"<h2>무엇을 만드나</h2><p class='miss'>{UNDETERMINED} -- 무엇을 만들어 드릴지 먼저 정합니다</p>")
+    if model.get("not_doing"):
+        o.append("<p><b>이번에 만들지 않을 것</b>: " + _e(", ".join(map(str, model["not_doing"]))) + "</p>")
+    goals = model.get("goals") or []
+    o.append("<h2>알고 싶은 것</h2>" + ("<ol>" + "".join(f"<li>{_e(g.get('say'))}</li>" for g in goals if isinstance(g, dict)) + "</ol>"
+                                       if goals else "<p class='miss'>아직 없습니다 -- '이 데이터로 무엇을 알 수 있어야 하나요?'</p>"))
+    o.append("<h2>하는 일</h2>")
+    if works:
+        o.append("<table><tr><th>일</th><th>누가</th><th>화면</th><th>쓰는 표</th></tr>")
+        for w in works:
+            scr = w.get("screen")
+            scr = ", ".join(scr) if isinstance(scr, list) else (scr or "")
+            uses = "<br>".join(f"{_e(lab(tn))} -- {_e(_ops(ops))}" for tn, ops in (w.get("uses") or {}).items())
+            o.append(f"<tr><td><b>{_e(w['name'])}</b>" + (f"<div class='mut'>{_e(w.get('say'))}</div>" if w.get("say") else "")
+                     + f"</td><td>{_e(w.get('who'))}</td><td>{_e(scr)}</td><td>{uses}</td></tr>")
+        o.append("</table>")
+    else:
+        o.append("<p class='miss'>하는 일(works)이 적혀 있지 않습니다 -- 이 데이터를 쓰는 일 3~7개(누가 · 어느 화면에서 · 어느 표를)를 적으면 표마다 왜 있는지가 보입니다</p>")
+    o.append("<h2>표</h2>")
+    for t in tb:
+        tn = t["name"]
+        keys = {k["name"] for k in key_columns(t)}
+        o.append(f"<h3>{_e(t.get('label') or tn)} <small>{_e(tn)}</small></h3>")
+        if t.get("about"):
+            o.append(f"<p><b>한 줄은</b> {_e(t['about'])}</p>")
+        base = tn[3:] if tn.startswith("pi_") else None
+        ub = used_by.get(tn) or (used_by.get(base) if base else None) or []
+        if ub:
+            o.append("<p><b>이 표를 쓰는 일</b>: " + " ".join(f"<span class='tag'>{_e(w['name'])} · {_e(_ops(ops))}</span>" for w, ops in ub) + "</p>")
+            who = sorted({str(w.get("who")) for w, _ in ub if w.get("who")})
+            if who:
+                o.append(f"<p><b>누가 쓰나</b>: {_e(', '.join(who))}</p>")
+        elif works:
+            o.append("<p class='miss'>이 표를 쓰는 일이 적혀 있지 않습니다</p>")
+        if base:
+            o.append(f"<p class='pi'>개인정보 짝 표 -- {_e(lab(base))} 한 줄마다 하나, {_e(lab(base))} 줄을 지우면 같이 지워집니다</p>")
+        rel = []
+        for c in t["columns"]:
+            if c.get("type") == "ref" and not (base and c.get("key")):
+                od = {"keep": "지우지 못하게 막습니다", "delete": "이 줄도 같이 지워집니다", "clear": "이 칸을 비웁니다"}[c.get("on_delete", "keep")]
+                rel.append(f"<li>{_e(t.get('label') or tn)} 한 줄은 <b>{_e(lab(c['ref']))}</b> 한 줄을 가리킵니다 "
+                           f"({'꼭 있어야 함' if c.get('required') or c.get('key') else '비어도 됨'}). {_e(lab(c['ref']))} 줄을 지우려 하면 {_e(od)}.</li>")
+        if rel:
+            o.append("<ul>" + "".join(rel) + "</ul>")
+        has_about = any(c.get("about") for c in all_columns(t))
+        o.append("<table><tr><th>칸</th>" + ("<th>뜻</th>" if has_about else "") + "<th>종류</th><th>규칙</th></tr>")
+        for c in all_columns(t):
+            rule = []
+            if c.get("required") or c["name"] in keys:
+                rule.append("꼭 채움")
+            if c.get("unique"):
+                rule.append("같은 값 두 번 금지")
+            if c.get("choices"):
+                rule.append("고르기: " + "/".join(map(str, c["choices"])))
+            if c.get("auto"):
+                rule.append("자동")
+            o.append(f"<tr><td>{_e(c.get('label') or c['name'])}" + (" <span class='pi'>(개인정보)</span>" if c.get("personal") else "") + "</td>"
+                     + (f"<td>{_e(c.get('about'))}</td>" if has_about else "")
+                     + f"<td>{_e(TYPE_KO.get(c['type'], c['type']))}</td><td>{_e(', '.join(rule))}</td></tr>")
+        o.append("</table>")
+        rows = t.get("sample") or []
+        if rows:
+            cols = [c for c in all_columns(t) if not c.get("auto")]
+            o.append("<p class='mut'>예시 (만든 값)</p><table><tr>" + "".join(f"<th>{_e(c.get('label') or c['name'])}</th>" for c in cols) + "</tr>"
+                     + "".join("<tr>" + "".join(f"<td>{_e(_cellv(c, r.get(c['name'], '')))}</td>" for c in cols) + "</tr>" for r in rows) + "</table>")
+        else:
+            o.append("<p class='miss'>예시가 없습니다 -- 들어갈 법한 값 몇 줄을 만들어 두면 빠진 칸이 잘 보입니다</p>")
+    o.append(f"<p class='mut'>정본 data/model.light.json 에서 만들었습니다 (data-light). 그림은 <code>datalight.py view</code>.</p></main></body></html>")
+    return "\n".join(o) + "\n"
+
+
 def build(model: dict, out_dir, db: str | None = None) -> list[str]:
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     files = []
-    for name, text in (("schema.sql", ddl(model, db)), ("erd.md", erd(model)), ("spec.md", spec_md(model))):
+    for name, text in (("schema.sql", ddl(model, db)), ("erd.md", erd(model)), ("spec.md", spec_md(model)), ("book.html", book_html(model))):
         _write(out / name, text)
         files.append(name)
     if spec_xlsx(model, out / "spec.xlsx"):
@@ -925,7 +1084,7 @@ def stale_outputs(model: dict, out_dir) -> list[str]:
     out = Path(out_dir)
     if not out.is_dir():
         return []
-    want = {"schema.sql": None, "erd.md": erd(model), "spec.md": spec_md(model)}
+    want = {"schema.sql": None, "erd.md": erd(model), "spec.md": spec_md(model), "book.html": book_html(model)}
     stale = []
     for name, text in want.items():
         f = out / name
@@ -1584,6 +1743,39 @@ def upgrade_facts(model: dict) -> dict | None:
     return {"facts_version": "1", "facts": facts, "history": []}
 
 
+def upgrade_blueprint(model: dict) -> dict:
+    """works → 전문판 시스템 청사진(blueprint.json)의 시작점: 역할(누가) · 화면 · 기능(하는 일). 업무 단계·요청·API 는 전문판에서 사용자와 정리한다."""
+    works = [w for w in model.get("works") or [] if isinstance(w, dict) and w.get("name")]
+    who = []
+    for w in works:
+        if w.get("who") and str(w["who"]) not in who:
+            who.append(str(w["who"]))
+    rid = {name: f"role-{i}" for i, name in enumerate(who, 1)}
+    scr_names = []
+    for w in works:
+        for sname in (w.get("screen") if isinstance(w.get("screen"), list) else [w.get("screen")]):
+            if sname and str(sname) not in scr_names:
+                scr_names.append(str(sname))
+    sid = {name: f"S-{i}" for i, name in enumerate(scr_names, 1)}
+    screens = []
+    for name in scr_names:
+        users = [rid[str(w["who"])] for w in works if w.get("who") and name in (w.get("screen") if isinstance(w.get("screen"), list) else [w.get("screen")])]
+        screens.append({"id": sid[name], "name": name, "for": list(dict.fromkeys(users)), "purpose": "", "origin": "user"})
+    feats = []
+    for i, w in enumerate(works, 1):
+        sc = w.get("screen") if isinstance(w.get("screen"), list) else [w.get("screen")]
+        uses = "; ".join(f"{t} {_ops(o)}" for t, o in (w.get("uses") or {}).items())
+        feats.append({"id": f"F-{i}", "name": str(w["name"]), "description": " -- ".join(x for x in (str(w.get("say") or ""), f"쓰는 표: {uses}" if uses else "") if x),
+                      "screens": [sid[str(x)] for x in sc if x], "apis": [], "jobs": [], "status": "designed", "origin": "user"})
+    p = model.get("product") if isinstance(model.get("product"), dict) else {}
+    return {"blueprint_version": "1",
+            "system": {"name": model.get("project") or "", "summary": str(p.get("said") or ""), "problem": "",
+                       "roles": [{"id": rid[n], "name": n} for n in who], "deliverables": [], "origin": "user",
+                       "constraints": [f"만들지 않을 것: {x}" for x in model.get("not_doing") or []]},
+            "requirements": [], "processes": [], "features": feats, "screens": screens, "implementation": {},
+            "_from": "data-light upgrade -- 업무 단계·요청·화면이 보여 주는 정보·API 는 전문판에서 사용자와 정리한다 (systembook.py check 가 빈칸으로 보인다)"}
+
+
 def upgrade(model: dict, schema: str = "app", pi_schema: str | None = None) -> dict:
     """light model → data-expert-framework model.json (passes its check_dictionary / export_all)"""
     errs, _ = check(model)
@@ -1735,6 +1927,7 @@ def main(argv=None) -> int:
     p = sp.add_parser("upgrade"); p.add_argument("model"); p.add_argument("--out", default="model.json")
     p.add_argument("--schema", default="app"); p.add_argument("--pi-schema")
     p.add_argument("--facts", help="전문판 질문 대장(data/facts.json)으로 만드는 것(product)도 옮긴다")
+    p.add_argument("--blueprint", help="전문판 시스템 청사진(data/blueprint.json)으로 하는 일(works)도 옮긴다")
     a = ap.parse_args(argv)
 
     if a.cmd == "view":
@@ -1818,6 +2011,9 @@ def main(argv=None) -> int:
         if a.facts and os.path.exists(a.facts):
             print(f"{a.facts} 가 이미 있습니다 -- 덮어쓰지 않습니다 (전문판의 facts.py answer 로 넣으세요). 아무것도 만들지 않았습니다")
             return 1
+        if a.blueprint and os.path.exists(a.blueprint):
+            print(f"{a.blueprint} 가 이미 있습니다 -- 덮어쓰지 않습니다 (전문판에서 고칩니다). 아무것도 만들지 않았습니다")
+            return 1
         full = upgrade(load(a.model), a.schema, a.pi_schema)
         save(full, a.out)
         print(f"전문판 정본 → {a.out}: 테이블 {len(full['tables'])}개 · 단어 {len(full['words'])}개 "
@@ -1829,6 +2025,11 @@ def main(argv=None) -> int:
             else:
                 save(fx, a.facts)
                 print(f"질문 대장 → {a.facts}: " + ", ".join(f"{k}@1" for k in fx["facts"]))
+        if a.blueprint:
+            bp = upgrade_blueprint(load(a.model))
+            save(bp, a.blueprint)
+            print(f"시스템 청사진 → {a.blueprint}: 기능(하는 일) {len(bp['features'])} · 화면 {len(bp['screens'])} · 역할 {len(bp['system']['roles'])}"
+                  " (업무 단계·요청·API 는 전문판에서 사용자와 정리)")
         return 0
     return 2
 
