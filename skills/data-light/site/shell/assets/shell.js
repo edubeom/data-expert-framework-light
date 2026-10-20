@@ -1,5 +1,6 @@
 /* 개발 관리 사이트 -- 공통 화면 틀 (outputs-shell). 원본: data-expert-framework runtime/outputs-shell -- 사본은 고치지 않는다.
    data/site.js (메뉴·프로젝트) 와 data/<쪽>.js (쪽 머리 + body.sections) 를 읽어 그린다. 서버 모드(http)와 파일 모드(file://) 둘 다.
+   공개본(site.hosting = "static" -- 서비스 주소 아래 · GitHub Pages 에 올린 것)은 http 로 열어도 사이트 서버가 없다: 실시간 반영 · 로컬 설정 · 불러 보기를 하지 않는다.
    모든 글은 textContent 로 넣는다 (HTML 문자열로 넣지 않음). 링크는 사이트 안 상대 주소와 http(s) 만. */
 (function () {
   "use strict";
@@ -9,6 +10,7 @@
   var B = document.body;
   var BASE = B.getAttribute("data-base") || "";
   var FILE = location.protocol === "file:";
+  var STATIC = !FILE && !!SITE && SITE.hosting === "static";          // 공개본 -- 사이트 서버(/__outputs/*)가 없다
   var MARK = SITE ? SITE.mark : null;
   var STATES = {
     user: "사용자 확인", ai_draft: "AI 초안 · 확인 전", proxy: "대리 확인 · 사용자 확인 필요",
@@ -469,6 +471,10 @@
       box.appendChild(el("p", { "class": "o-text warn", text: "파일로 연 사이트에서는 보내지 않습니다 -- 서버로 엽니다 (python outputs.py serve --root .). 아래 curl 예시는 그대로 쓸 수 있습니다." }));
       return box;
     }
+    if (STATIC) {
+      box.appendChild(el("p", { "class": "o-text note", text: "공개한 사이트에서는 보내지 않습니다 -- 개발하는 컴퓨터의 개발 관리 사이트(서버로 연 것)에서 불러 봅니다. 아래 curl 예시는 그대로 쓸 수 있습니다." }));
+      return box;
+    }
     var btn = el("button", { type: "button", "class": "o-btn primary", text: "불러 보기 열기" });
     btn.addEventListener("click", function () { openTry(s); });
     box.appendChild(btn);
@@ -769,7 +775,7 @@
 
   // 서버로 열었을 때만 -- 이 컴퓨터의 로컬 설정에 있는 도구(참조 콘솔)로 가는 링크. 사이트 파일에는 담지 않는다 (포트는 로컬 설정에만).
   function localLinks() {
-    if (FILE) return;
+    if (FILE || STATIC) return;
     fetch(BASE + "__outputs/local", { cache: "no-store", credentials: "same-origin" }).then(function (r) { return r.ok ? r.json() : null; })
       .then(function (d) {
         var vals = (d && d.values) || {};                   // 자리표시(<서비스 주소>)를 이 컴퓨터의 로컬 설정 값으로 -- 사이트 파일에는 없다
@@ -784,6 +790,7 @@
   }
 
   function live() {
+    if (STATIC) return el("span", { "class": "o-live", title: "공개본은 다시 올릴 때 바뀝니다", text: "공개본 · " + String(SITE.generated_at || "").replace("T", " ").slice(0, 16) });
     if (FILE || !SITE.generated_at) return null;
     var tag = el("span", { "class": "o-live", text: "실시간 반영" });
     var seen = SITE.generated_at, fails = 0;

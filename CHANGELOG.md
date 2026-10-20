@@ -1,5 +1,15 @@
 # 변경 기록
 
+## 0.10.0 — 2026-10-20 · 개발 관리 사이트 공개 (서비스 주소 아래 · GitHub Pages)
+- 소유자 결정(2026-10-20): "개발 결과가 웹페이지일 경우 '서비스주소/dev-process-framework/', '서비스주소/data-expert-framework/' 로 서비스되고 웹 페이지가 없을 경우에는
+  페이지를 만들어서 GitHub Pages 로 ... light 도 마찬가지고. 동일한 페이지를 중복해서 만들지 않도록 주의" -- 전문판 0.19.0 과 같은 규칙
+- **`publish`** -- 방식(`service` · `pages` · `none`)을 사용자 답 원문으로 정하고(`--set … --by user --quote`, 설정 `data/outputs-publish.json`), 정한 대로 올린다.
+  service: `--web-dir` 폴더의 `data-expert-framework-light/` (→ `<서비스 주소>/data-expert-framework-light/`) · pages: `gh-pages` 가지 (작업 폴더 · HEAD 는 그대로,
+  그 가지의 다른 사이트 파일은 둔다). 남의 폴더 · 고친 파일은 덮지 않고, 재료가 그대로면 다시 쓰지 않는다
+- **같은 쪽을 두 번 만들지 않는다** -- dev-process-light(`light-portal`)가 쓰는 함수(`publish` · `publish_files`)도 여기에: `dev-process-light/` 에 5쪽,
+  `data-expert-framework-light/` 에는 안내 쪽만. dev-process-light 프로젝트에서는 `site` · `publish` 가 멈추고 `light-portal` 을 알린다
+- 화면 틀 사본 **1.4.0** (전문판 `bcc289a`) -- 공개본은 사이트 서버를 찾지 않는다 · 모든 쪽에 noindex
+
 ## 0.9.0 — 2026-10-20 · 새 판 반영이 원칙, 고친 것은 묻는다
 - 소유자 원칙(2026-10-20): "프레임워크가 변경되면 로컬 파일이 있어도 반영하는 걸 원칙으로 한다. 다만 결정은 사용자에게 맡긴다 ... 차이가 발생할 경우 무조건 물어볼 수 있도록"
 - `hook install` 이 **직접 고친 CI 파일**(`.github/workflows/data-light.yml`)을 말없이 두지 않는다 -- 지난번에 이 도구가 쓴 그대로거나 손대지 않은 예전 판이면

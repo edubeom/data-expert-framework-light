@@ -55,6 +55,7 @@ python scripts/datalight.py check examples/shop/data/model.light.json
 python scripts/datalight.py try   examples/shop/data/model.light.json
 python scripts/datalight.py build examples/shop/data/model.light.json --out /tmp/shop
 python scripts/datalight.py site  examples/shop/data/model.light.json --out /tmp/shop-site   # /tmp/shop-site/index.html 을 브라우저로
+python scripts/datalight.py publish data/model.light.json   # 공개 (0.10): 사이트 아래 <서비스 주소>/data-expert-framework-light/ 또는 GitHub Pages -- 방식은 묻고 --set
 ```
 ```bash
 python scripts/datalight.py verify examples/shop/data/model.light.json --mutate   # 통과/실패 관문 + 장치 검증

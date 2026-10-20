@@ -13,3 +13,5 @@
 - 1.3.0 (0.18): 표의 `filter`(칸마다 거르기 · 끊긴 줄만)와 줄 색 `_tone` · 절 `shots`(화면 캡처 -- 사이트 안 그림만) · 값 `img` · 값 `local`(자리표시 --
   서버로 연 화면에서만 `/__outputs/local` 의 `values` 로 채운다: 구성 요소 · 연결 · 서비스 주소. 사이트 파일 · 내보내기에는 자리표시만).
 - 1.3.1 (0.18.1): 링크 모양 검사(safeHref)가 긴 경로에서 오래 걸리지 않게 (조각/ 의 되풀이)
+- 1.4.0 (0.19): 공개본(`site.hosting: "static"` -- `outputs.py publish` 가 서비스 주소 아래 · GitHub Pages 에 올린 것). http 로 열어도 사이트 서버가 없으니
+  실시간 반영 · 로컬 설정(`/__outputs/local`) · 불러 보기를 하지 않고, 머리줄에 '공개본 · 만든 때'. 모든 쪽에 `robots: noindex, nofollow`.

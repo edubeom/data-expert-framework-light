@@ -1453,5 +1453,91 @@ class V09(unittest.TestCase):
             self.assertTrue(wf.exists())
 
 
+
+class V010(unittest.TestCase):
+    """0.10.0 -- 개발 관리 사이트 공개 (소유자 2026-10-20): 서비스 주소 아래 · GitHub Pages, 같은 쪽을 두 번 만들지 않는다."""
+
+    def _proj(self, d, git=True):
+        root = Path(d) / "p"
+        shutil.copytree(SKILL / "examples" / "shop", root)
+        if git:
+            for c in (["init", "-q", "-b", "main"], ["config", "user.email", "t@example.com"], ["config", "user.name", "t"], ["add", "-A"], ["commit", "-qm", "base"]):
+                subprocess.run(["git", "-C", str(root), *c], capture_output=True, check=True)
+        return root, root / "data" / "model.light.json"
+
+    def _git(self, cwd, *a):
+        return subprocess.run(["git", "-C", str(cwd), *a], capture_output=True, text=True, encoding="utf-8").stdout
+
+    @unittest.skipUnless(shutil.which("git"), "git 없음")
+    def test_service_publish_one_folder_same_when_unchanged_and_never_foreign(self):
+        with tempfile.TemporaryDirectory() as d:
+            root, model = self._proj(d)
+            r = run("publish", model)
+            self.assertEqual(r.returncode, 2)
+            self.assertIn("정하지 않았습니다", r.stdout)
+            with self.assertRaises(dl.PublishError):
+                dl.set_publish(root, "data-light", "service", by="proxy", quote="x", web_dir="public")
+            d1 = dl.set_publish(root, "data-light", "service", by="user", quote="홈페이지 아래로 https://me.example.com:8080 에", web_dir="public")
+            self.assertNotIn("8080", d1["quote"])
+            for bad in ("/srv", "../x", ".git/y", "data/outputs/site"):
+                with self.assertRaises(dl.PublishError):
+                    dl.set_publish(root, "data-light", "service", by="user", quote="ok", web_dir=bad)
+            r = run("publish", model)
+            self.assertEqual(r.returncode, 0, r.stdout)
+            pub = root / "public" / "data-expert-framework-light"
+            site = json.loads((pub / "data" / "site.json").read_text(encoding="utf-8"))
+            self.assertEqual(site["hosting"], "static")
+            self.assertIn('content="noindex, nofollow"', (pub / "index.html").read_text(encoding="utf-8"))
+            self.assertEqual([x.name for x in (root / "public").iterdir()], ["data-expert-framework-light"])
+            self._git(root, "add", "-A"); self._git(root, "commit", "-qm", "p")
+            again = dl.publish(root, "data-light", lambda out: dl.build_site(model, out, hosting="static"))
+            self.assertEqual(again["state"], "same")
+            (pub / "data" / "overview.json").write_text("{}", encoding="utf-8")                 # 공개본을 손으로 고쳤다
+            m = dl.load(model); m["project"] = (m.get("project") or "") + " (바뀜)"; dl.save(m, model)
+            with self.assertRaises(dl.PublishError):
+                dl.publish(root, "data-light", lambda out: dl.build_site(model, out, hosting="static"))
+        with tempfile.TemporaryDirectory() as d:
+            root, model = self._proj(d, git=False)
+            (root / "docs" / "data-expert-framework-light").mkdir(parents=True)
+            (root / "docs" / "data-expert-framework-light" / "mine.html").write_text("x", encoding="utf-8")
+            with self.assertRaises(dl.PublishError):
+                dl.set_publish(root, "data-light", "service", by="user", quote="ok", web_dir="docs")
+
+    @unittest.skipUnless(shutil.which("git"), "git 없음")
+    def test_pages_publish_to_gh_pages_without_touching_the_work_tree(self):
+        with tempfile.TemporaryDirectory() as d:
+            root, model = self._proj(d)
+            remote = Path(d) / "remote.git"
+            subprocess.run(["git", "init", "-q", "--bare", str(remote)], capture_output=True, check=True)
+            self._git(root, "remote", "add", "origin", str(remote))
+            dl.set_publish(root, "data-light", "pages", by="user", quote="깃헙 페이지로")
+            head, st = self._git(root, "rev-parse", "HEAD"), self._git(root, "status", "--porcelain")
+            r = dl.publish(root, "data-light", lambda out: dl.build_site(model, out, hosting="static"))
+            self.assertEqual(r["state"], "pushed", r)
+            names = set(self._git(remote, "ls-tree", "--name-only", "gh-pages").split())
+            self.assertTrue({"data-expert-framework-light", "index.html", ".nojekyll", "robots.txt"} <= names, names)
+            self.assertEqual(self._git(root, "rev-parse", "HEAD"), head)
+            self.assertEqual(self._git(root, "status", "--porcelain"), st)
+            self.assertEqual(dl.publish(root, "data-light", lambda out: dl.build_site(model, out, hosting="static"))["state"], "same")
+
+    def test_dev_light_gets_the_site_once_and_data_light_only_pointers(self):
+        with tempfile.TemporaryDirectory() as d:
+            root, model = self._proj(d, git=False)
+            r = dl.build_site(model, Path(d) / "site")
+            files = dl.publish_files(Path(r["site"]), "dev-light")
+            ptr = {k: v.decode("utf-8") for k, v in files.items() if k.startswith("data-expert-framework-light/")}
+            self.assertEqual(len(ptr), 5)
+            self.assertIn("url=../dev-process-light/data/", ptr["data-expert-framework-light/index.html"])
+            self.assertIn("url=../../dev-process-light/business/", ptr["data-expert-framework-light/business/index.html"])
+            self.assertTrue(any(k.startswith("dev-process-light/assets/") for k in files))
+            (root / "dev-notes").mkdir(); (root / "dev-notes" / "NOW.md").write_text("# 지금\n", encoding="utf-8")
+            (root / ".claude" / "skills" / "light-portal").mkdir(parents=True)
+            for cmd in (("site", model), ("publish", model)):
+                out = run(*cmd)
+                self.assertNotEqual(out.returncode, 0)
+                self.assertIn("dev-process-light", out.stdout)                            # light-portal 이 데이터 쪽을 함께 만든다
+            self.assertFalse((root / "data" / "outputs").exists())
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)
