@@ -43,6 +43,7 @@ Claude 에게 그냥 말하세요.
 | `out/book.html` | **데이터 설명서** — 하는 일(누가 · 어느 화면에서) → 쓰는 표 → 칸 · 예시 값. 브라우저로 바로 열립니다 |
 | `out/erd.md` | 표 사이 관계 그림 (GitHub·VS Code 에서 바로 보임) |
 | `datalight.py view` | 같은 그림을 브라우저에서 -- 표를 끌어 옮기고(고정·되돌리기), 관계를 따라 자동 배치, 표를 누르면 설명, 테마·보기 단계(표만·키·칸·자료형)·선택한 표만, 정본을 고치면 곧바로 다시 그림 (`skills/data-light/viewer`, MIT) |
+| `outputs/site/index.html` | **개발 관리 사이트** (`datalight.py site`) — 개요 · 업무 설명 · ERD·데이터 설계 · 진행 상황 · 파일 5쪽. 파일로 바로 열립니다 (서버·포트 없음, git 에 올리지 않음). 전문판·dev-process-framework 와 같은 화면 (화면 틀은 `skills/data-light/site`, MIT) |
 | `out/schema.sql` | DB 를 만드는 SQL (SQLite 또는 PostgreSQL·Supabase) |
 | `out/spec.md`, `out/spec.xlsx` | 테이블 정의서 |
 | `app.db` | SQLite 를 쓸 때의 데이터 파일 |
@@ -53,6 +54,7 @@ cd skills/data-light
 python scripts/datalight.py check examples/shop/data/model.light.json
 python scripts/datalight.py try   examples/shop/data/model.light.json
 python scripts/datalight.py build examples/shop/data/model.light.json --out /tmp/shop
+python scripts/datalight.py site  examples/shop/data/model.light.json --out /tmp/shop-site   # /tmp/shop-site/index.html 을 브라우저로
 ```
 ```bash
 python scripts/datalight.py verify examples/shop/data/model.light.json --mutate   # 통과/실패 관문 + 장치 검증

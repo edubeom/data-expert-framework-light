@@ -16,6 +16,7 @@ description: 비전공자·작은 시스템을 위한 쉬운 데이터 설계. "
 | `split <model> --write` | 개인정보 칸을 `pi_<테이블>` 로 옮김 |
 | `build <model> [--db postgresql]` | `data/out/` 에 schema.sql · erd.md · spec.md · **book.html(데이터 설명서)** (+spec.xlsx) |
 | `view [<model>]` | 웹 ERD 그림을 브라우저로 (보기 전용) -- 표를 끌어 옮기고(위치는 `model.light.json.layout.json`), 테마·보기 단계·선택한 표만, 정본을 고치면 곧바로 다시 그림 |
+| `site <model>` | **개발 관리 사이트**(가벼운 판 5쪽: 개요 · 업무 설명 · ERD·데이터 설계 · 진행 상황 · 파일) -- `data/outputs/site/index.html` 을 파일로 연다 (서버·포트 없음, git 에 올리지 않음). 전문판 · dev-process-framework 와 같은 화면 · 같은 쪽 번호 |
 | `try <model>` | SQLite 에서 실제로 만들고 샘플을 넣고, 규칙이 나쁜 값을 막는지 확인 |
 | `import plan <csv/xlsx> --table 이름` → `import apply …` | 파일을 테이블로 (사용자 확인 후) |
 | `import schema data/app.db` | 이미 있는 SQLite DB 에서 정본 초안 (이름표는 비어 있음) |

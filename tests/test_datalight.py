@@ -1170,5 +1170,134 @@ class V06(unittest.TestCase):
             self.assertIn("정본이 없습니다", r.stdout)
 
 
+
+class V08(unittest.TestCase):
+    """0.8.0 -- 개발 관리 사이트 (가벼운 판 5쪽, 파일 모드, 포트 없음) -- 전문판 화면 틀의 MIT 사본 (site/shell)."""
+
+    def _site(self, d):
+        root = Path(d) / "proj"
+        (root / "data").mkdir(parents=True)
+        shutil.copy(SHOP, root / "data" / "model.light.json")
+        return root, root / "data" / "model.light.json"
+
+    def test_shell_copy_matches_lock(self):
+        sys.path.insert(0, str(ROOT / "tools"))
+        import update_shell
+        self.assertEqual(update_shell.check(), [])
+        lock = json.loads((SKILL / "site" / "shell.lock.json").read_text(encoding="utf-8"))
+        self.assertEqual(lock["version"], (SKILL / "site" / "shell" / "VERSION").read_text(encoding="utf-8").strip())
+        self.assertIn("MIT", (SKILL / "site" / "NOTICE.md").read_text(encoding="utf-8"))
+
+    def test_site_has_five_pages_with_spec_headers(self):
+        with tempfile.TemporaryDirectory() as d:
+            root, m = self._site(d)
+            r = run("site", m)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("개발 관리 사이트", r.stdout)
+            site = root / "data" / "outputs" / "site"
+            self.assertEqual((root / "data" / "outputs" / ".gitignore").read_text(encoding="utf-8").strip().splitlines()[-1], "*")
+            sj = json.loads((site / "data" / "site.json").read_text(encoding="utf-8"))
+            self.assertEqual([x["id"] for x in sj["menu"]], ["overview", "business", "data", "progress", "files"])
+            self.assertEqual([x["no"] for x in sj["menu"]], [1, 2, 4, 9, 10])               # 전문판과 같은 번호 · 주소
+            self.assertEqual(sj["framework"], "data-light")
+            self.assertEqual(sj["level"], "light")
+            for pid, path in (("overview", ""), ("business", "business/"), ("data", "data/"), ("progress", "progress/"), ("files", "files/")):
+                pg = json.loads((site / "data" / f"{pid}.json").read_text(encoding="utf-8"))
+                for k in ("outputs_version", "page", "framework", "framework_version", "level", "generated_at", "source", "confirm", "blanks", "body"):
+                    self.assertIn(k, pg)
+                self.assertEqual(pg["outputs_version"], 1)
+                self.assertTrue(pg["body"]["sections"])
+                html_ = (site / path / "index.html").read_text(encoding="utf-8")
+                self.assertNotIn("<script>", html_)                                         # 인라인 스크립트 없음 (CSP)
+                self.assertIn(f'data/{pid}.js', html_)
+            self.assertTrue((site / "assets" / "shell.js").is_file())
+            text = "\n".join(f.read_text(encoding="utf-8") for f in site.rglob("*") if f.suffix in (".json", ".js", ".html"))
+            self.assertNotRegex(text, r"127\.0\.0\.1:\d|localhost:\d")                      # 포트 없음 (파일 모드)
+            data = json.loads((site / "data" / "data.json").read_text(encoding="utf-8"))
+            ids = [x.get("id") for x in data["body"]["sections"]]
+            self.assertIn("erd", ids)
+            self.assertIn("t-customer", ids)
+            self.assertIn("s-customer", ids)                                                # 예시 값 (만든 값)
+            biz = json.loads((site / "data" / "business.json").read_text(encoding="utf-8"))
+            self.assertEqual(biz["body"]["sections"][0]["id"], "works")
+
+    def test_site_shows_blanks_and_check_problems(self):
+        with tempfile.TemporaryDirectory() as d:
+            root, m = self._site(d)
+            model = dl.load(m)
+            model.pop("works", None)
+            model.pop("goals", None)
+            model["tables"][0].pop("sample", None)
+            dl.save(model, m)
+            r = dl.build_site(m)
+            self.assertGreater(r["blanks"], 0)
+            site = Path(r["site"])
+            ov = json.loads((site / "data" / "overview.json").read_text(encoding="utf-8"))
+            self.assertTrue(any("알고 싶은 것" in x["label"] for x in ov["blanks"]["items"]))
+            biz = json.loads((site / "data" / "business.json").read_text(encoding="utf-8"))
+            self.assertEqual(biz["body"]["sections"][0]["kind"], "empty")                    # 재료가 없어도 쪽은 있고 '만드는 법'
+
+    def test_site_folder_is_its_own(self):
+        with tempfile.TemporaryDirectory() as d:
+            root, m = self._site(d)
+            other = Path(d) / "mine"
+            other.mkdir()
+            (other / "index.html").write_text("<h1>내 쪽</h1>", encoding="utf-8")
+            with self.assertRaises(ValueError):
+                dl.build_site(m, other)
+            self.assertIn("내 쪽", (other / "index.html").read_text(encoding="utf-8"))
+            with self.assertRaises(ValueError):
+                dl.build_site(m, root)
+            out = Path(d) / "site2"
+            dl.build_site(m, out)
+            (out / "progress" / "stale.html").write_text("x", encoding="utf-8")               # 이 도구가 쓰지 않은 파일은 지우지 않는다
+            dl.build_site(m, out)
+            self.assertTrue((out / "progress" / "stale.html").is_file())
+
+    def _pages(self, m, fw="data-light"):
+        model = dl.load(m)
+        return model, dl.site_pages(model, m, "abc123", "2026-10-20T00:00:00Z", framework=fw, framework_version="9.9.9")
+
+    def test_write_site_takes_subpages_and_menu_lines_for_the_dev_light_portal(self):
+        with tempfile.TemporaryDirectory() as d:
+            root, m = self._site(d)
+            model, pages = self._pages(m, "dev-light")
+            self.assertEqual({p["framework"] for p in pages.values()}, {"dev-light"})
+            self.assertEqual({p["framework_version"] for p in pages.values()}, {"9.9.9"})
+            sub = dl.site_page("progress", [{"kind": "text", "id": "t", "text": "기록"}], framework="dev-light", framework_version="9.9.9",
+                               mark="abc123", now="2026-10-20T00:00:00Z", source=[], sub="log/1", title="기록 하나")
+            out = root / "dev-notes" / "outputs" / "site"
+            r = dl.write_site(out, root, pages, framework="dev-light", framework_version="9.9.9", project="p", mark="abc123", now="2026-10-20T00:00:00Z",
+                              subs=[("progress", "log/1", sub), ("progress", "../x", sub), ("overview", "a", sub)],
+                              menu_subs={"progress": [{"id": "log", "label": "기능별 기록", "href": "progress/#logs", "n": 1}]},
+                              default_site=out)
+            self.assertEqual((r["pages"], r["subs"]), (5, 1))
+            self.assertEqual(len(r["errors"]), 2)                                           # 위로 가는 이름 · 개요 아래는 쓰지 않는다
+            html_ = (out / "progress" / "log" / "1" / "index.html").read_text(encoding="utf-8")
+            self.assertIn('data-base="../../../"', html_)
+            self.assertIn("data/progress/log/1.js", html_)
+            self.assertTrue((root / "dev-notes" / "outputs" / ".gitignore").is_file())     # 정한 자리면 outputs/ 에 .gitignore
+            sj = json.loads((out / "data" / "site.json").read_text(encoding="utf-8"))
+            self.assertEqual(sj["framework_label"], "dev-process-light")
+            self.assertEqual(sj["menu"][3]["subs"][0]["n"], 1)
+            with self.assertRaises(ValueError):
+                dl.write_site(out, root, {k: v for k, v in pages.items() if k != "files"}, framework="dev-light", framework_version="1",
+                              project="p", mark="m", now="n")
+            with self.assertRaises(ValueError):
+                dl.write_site(root.parent, root, pages, framework="dev-light", framework_version="1", project="p", mark="m", now="n")
+
+    def test_old_files_go_only_when_unchanged(self):
+        with tempfile.TemporaryDirectory() as d:
+            root, m = self._site(d)
+            model, pages = self._pages(m)
+            out = Path(d) / "s"
+            sub = lambda n: dl.site_page("progress", [], framework="data-light", framework_version="1", mark="m", now="n", source=[], sub=n)  # noqa: E731
+            dl.write_site(out, root, pages, framework="data-light", framework_version="1", project="p", mark="m", now="n",
+                          subs=[("progress", "a", sub("a")), ("progress", "b", sub("b"))])
+            (out / "data" / "progress" / "b.json").write_text("내가 고침", encoding="utf-8")
+            dl.write_site(out, root, pages, framework="data-light", framework_version="1", project="p", mark="m", now="n")
+            self.assertFalse((out / "progress" / "a" / "index.html").exists())               # 그대로인 지난 파일은 지운다
+            self.assertTrue((out / "data" / "progress" / "b.json").is_file())                # 고친 파일은 둔다
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

@@ -23,6 +23,7 @@ Commands
   hook status [--repo .]                  installed hook / tool version vs this one (exit 0 same, 1 differ)
   import schema <app.db> [--out data/model.light.json] [--force]
                                           draft a model from an existing SQLite DB (labels left empty)
+  site    <model> [--out DIR]            development site (light: 5 pages) -- open data/outputs/site/index.html as a file
   --version
 
 Harness idea: decide "what counts as done" first (goals / not_doing in the model), turn it into
@@ -46,7 +47,7 @@ import sys
 from pathlib import Path
 
 FORMAT = "data-light/1"
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 NAME = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 TYPES = ("id", "ref", "text", "long_text", "int", "number", "money", "bool", "date", "datetime", "owner")
 ACCESS = ("members", "own", "read")
@@ -1876,6 +1877,350 @@ def upgrade(model: dict, schema: str = "app", pi_schema: str | None = None) -> d
 
 
 # ----------------------------------------------------------------- cli
+# ----------------------------------------------------------------- site (개발 관리 사이트 -- 가벼운 판, 파일로 연다)
+SITE_SHELL = Path(__file__).resolve().parents[1] / "site" / "shell"          # 전문판 화면 틀의 MIT 사본 (site/shell.lock.json)
+SITE_PAGES = (("overview", 1, "개요", ""), ("business", 2, "업무 설명", "business/"), ("data", 4, "ERD · 데이터 설계", "data/"),
+              ("progress", 9, "진행 상황", "progress/"), ("files", 10, "파일", "files/"))      # 사양 v1.1 의 가벼운 판 5쪽 (번호·주소는 전문판과 같다)
+SITE_READ = {"overview": "무엇을 만드는지, 알고 싶은 것(성공 기준), 지금 할 일을 한 화면에 봅니다.",
+             "business": "이 데이터를 쓰는 일(누가 · 어느 화면에서 · 어느 표를)과 일 × 표 연결을 봅니다.",
+             "data": "표마다 한 줄이 무엇인지, 어떤 칸이 있는지, 실제로 어떤 값이 들어가는지(만든 예시 값)를 봅니다. 그림은 표 사이의 연결입니다.",
+             "progress": "검사 결과 · 알고 싶은 것 · 만든 파일이 정본과 같은지 -- 어디까지 됐고 무엇이 남았는지 봅니다.",
+             "files": "이 사이트를 만든 재료(정본)와 거기서 만든 파일을 봅니다. 사이트는 보기만 합니다 -- 고칠 때는 정본을 고칩니다."}
+
+
+def _sha12(b: bytes) -> str:
+    import hashlib
+    return hashlib.sha256(b.replace(b"\r\n", b"\n")).hexdigest()[:12]
+
+
+def site_root(model_path) -> Path:
+    """정본이 data/ 안이면 그 위가 프로젝트 뿌리."""
+    mp = Path(model_path).resolve()
+    return mp.parent.parent if mp.parent.name == "data" else mp.parent
+
+
+def site_pages(model: dict, model_path, mark: str, now: str, *, framework: str = "data-light", framework_version: str | None = None) -> dict:
+    """가벼운 판 5쪽의 쪽 JSON (사양 outputs_version 1 의 머리 + body.sections).
+    dev-process-light 는 framework="dev-light" 로 불러 2 업무 설명 · 4 데이터를 쓰고 1 · 9 · 10 은 기록에서 만든다."""
+    root = site_root(model_path)
+    mp = Path(model_path).resolve()
+    try:
+        rel = mp.relative_to(root).as_posix()
+    except ValueError:
+        rel = mp.name
+    src = [{"path": rel, "fingerprint": _sha12(mp.read_bytes()), "label": "정본", "missing": False}]
+    T = tables(model)
+    works = [w for w in model.get("works") or [] if isinstance(w, dict) and w.get("name")]
+    goals = [g for g in model.get("goals") or [] if isinstance(g, dict)]
+    lab = lambda n: (T.get(n) or {}).get("label") or n  # noqa: E731
+
+    def chip(t, href=None, kind=None):
+        return {"_": mark, "chip": True, "t": str(t), "href": href, "kind": kind}
+
+    def badge(t, tone=""):
+        return {"_": mark, "badge": True, "t": str(t), "tone": tone}
+
+    def mono(t):
+        return {"_": mark, "t": str(t), "mono": True}
+
+    def tref(n):
+        return chip(lab(n), "data/#t-" + n if n in T else None)
+
+    def page(pid, secs, *, blanks=None, title=None, subtitle=None, sources=None, wide=False):
+        return site_page(pid, secs, framework=framework, framework_version=framework_version or __version__, mark=mark, now=now,
+                         source=src if sources is None else sources, blanks=blanks, title=title, subtitle=subtitle, wide=wide)
+    out = {}
+    errs, warns = check(model)
+    # 1 개요
+    prod = model.get("product") if isinstance(model.get("product"), dict) else {}
+    main = product_main(model) if prod.get("kinds") else None
+    blank1 = ([] if prod.get("kinds") else ["무엇을 만드는지(product) -- 사용자에게 묻고 한 말 그대로"]) + ([] if goals else ["알고 싶은 것(goals) -- 확인 쿼리로"])
+    todo = [{"text": "고칠 것: " + e, "tone": "bad", "href": "progress/#check"} for e in errs] + [{"text": b, "tone": "warn"} for b in blank1]
+    secs = [{"kind": "todo", "id": "todo", "title": "지금 할 일", "items": todo, "empty": "지금 고칠 것이 없습니다"}]
+    kv = [["만드는 것", (PRODUCT_KINDS.get(main, (main,))[0] if main else UNDETERMINED)]]
+    if prod.get("said"):
+        kv.append(["사용자가 한 말", "“" + str(prod["said"]) + "”"])
+    if model.get("not_doing"):
+        kv.append(["이번에 만들지 않을 것", ", ".join(map(str, model["not_doing"]))])
+    secs.append({"kind": "kv", "id": "system", "title": "이 시스템", "items": kv})
+    secs.append({"kind": "list", "id": "goals", "title": "알고 싶은 것", "count": len(goals), "items": [str(g.get("say") or "") for g in goals],
+                 "empty": "아직 없습니다 -- '이 데이터로 무엇을 알 수 있어야 하나요?'"})
+    secs.append({"kind": "cards", "id": "counts", "title": "한눈에", "items": [
+        {"label": "하는 일", "value": len(works), "href": "business/"}, {"label": "표", "value": len(T), "href": "data/"},
+        {"label": "고칠 것", "value": len(errs), "href": "progress/#check", "tone": "bad" if errs else "ok"},
+        {"label": "참고", "value": len(warns), "href": "progress/#check"}]})
+    out["overview"] = page("overview", secs, blanks=blank1, title=str(model.get("project") or "개요"), subtitle="개요")
+    # 2 업무 설명
+    secs = []
+    if works:
+        secs.append({"kind": "table", "id": "works", "title": "하는 일", "count": len(works),
+                     "columns": [{"key": "name", "label": "일"}, {"key": "who", "label": "누가", "nw": True}, {"key": "screen", "label": "화면"},
+                                 {"key": "uses", "label": "쓰는 표"}],
+                     "rows": [{"_id": "w-" + str(i + 1), "name": {"_": mark, "t": str(w["name"]), "sub": str(w.get("say")) if w.get("say") else None},
+                               "who": str(w.get("who") or "") or None,
+                               "screen": ", ".join(map(str, w["screen"])) if isinstance(w.get("screen"), list) else (str(w.get("screen")) if w.get("screen") else None),
+                               "uses": [tref(tn) for tn in (w.get("uses") or {})]} for i, w in enumerate(works)]})
+        cols = [n for n in (t["name"] for t in ordered(model)) if any(n in (w.get("uses") or {}) for w in works)]
+        secs.append({"kind": "matrix", "id": "crud", "title": "일 × 표", "corner": "하는 일",
+                     "lead": "일마다 어느 표를 만들고(C) 읽고(R) 고치고(U) 지우는지(D).",
+                     "cols": [{"key": n, "label": lab(n), "sub": n, "href": "data/#t-" + n} for n in cols],
+                     "rows": [{"label": str(w["name"]), "sub": str(w.get("who")) if w.get("who") else None,
+                               "cells": {tn: "".join(o for o in "CRUD" if o in str(ops).upper()) for tn, ops in (w.get("uses") or {}).items()}} for w in works]})
+        who = sorted({str(w.get("who")) for w in works if w.get("who")})
+        secs.append({"kind": "list", "id": "roles", "title": "누가", "items": who, "empty": "누가 하는지 적혀 있지 않습니다"})
+    else:
+        secs.append({"kind": "empty", "id": "works", "title": "하는 일", "why": "하는 일(works)이 적혀 있지 않습니다 -- 표마다 왜 있고 누가 쓰는지가 여기서 나옵니다.",
+                     "how": ["이 데이터를 쓰는 일 3~7개를 묻는다 (누가 · 어느 화면에서 · 어느 표를)", "정본의 works 에 적는다"], "cmd": None})
+    unused = [t["name"] for t in T.values() if works and not t["name"].startswith("pi_") and not any(t["name"] in (w.get("uses") or {}) for w in works)]
+    out["business"] = page("business", secs, blanks=(["하는 일(works)"] if not works else []) + [f"{lab(n)} 을 쓰는 일이 없다" for n in unused])
+    # 4 데이터
+    secs = []
+    tb = ordered(model)
+    nodes, edges, depth = [], [], {}
+    for t in tb:
+        refs = [c.get("ref") for c in t["columns"] if c.get("type") == "ref" and c.get("ref") in T and c.get("ref") != t["name"]]
+        depth[t["name"]] = 1 + max([depth.get(r, 0) for r in refs] or [-1])
+        nodes.append({"id": t["name"], "col": str(depth[t["name"]]), "label": lab(t["name"]), "sub": t["name"], "href": "#t-" + t["name"],
+                      "cls": "ext" if t["name"].startswith("pi_") else None})
+        edges += [{"from": t["name"], "to": r, "label": "가리킴"} for r in dict.fromkeys(refs)]
+    if nodes:
+        secs.append({"kind": "diagram", "id": "erd", "title": "표 사이 연결", "lead": "화살표는 '이 표의 한 줄이 저 표의 한 줄을 가리킨다'. 개인정보 짝 표는 점선 상자. 상자를 누르면 그 표로.",
+                     "cols": [{"id": str(i), "label": "기본 표" if i == 0 else f"{i}단계"} for i in range(max(depth.values()) + 1)],
+                     "nodes": nodes, "edges": edges, "w": 190})
+    secs.append({"kind": "table", "id": "tables", "title": "표", "count": len(tb), "empty": "표가 없습니다",
+                 "columns": [{"key": "name", "label": "표"}, {"key": "about", "label": "한 줄은"}, {"key": "cols", "label": "칸", "num": True},
+                             {"key": "pi", "label": "개인정보", "nw": True}, {"key": "sample", "label": "예시", "num": True}],
+                 "rows": [{"name": chip(lab(t["name"]), "#t-" + t["name"]), "about": str(t.get("about")) if t.get("about") else None,
+                           "cols": len(all_columns(t)), "pi": badge("짝 표" if t["name"].startswith("pi_") else "있음", "bad")
+                           if t["name"].startswith("pi_") or any(c.get("personal") for c in t["columns"]) else "없음",
+                           "sample": len(t.get("sample") or [])} for t in tb]})
+    blank4 = []
+    for t in tb:
+        keys = {k["name"] for k in key_columns(t)}
+        rows = []
+        for c in all_columns(t):
+            rule = []
+            if c.get("required") or c["name"] in keys:
+                rule.append("꼭 채움")
+            if c.get("unique"):
+                rule.append("같은 값 두 번 금지")
+            if c.get("choices"):
+                rule.append("고르기: " + "/".join(map(str, c["choices"])))
+            if c.get("auto"):
+                rule.append("자동")
+            if c.get("type") == "ref":
+                rule.append("→ " + lab(c.get("ref")))
+            rows.append({"col": {"_": mark, "t": str(c.get("label") or c["name"]), "sub": c["name"]}, "type": TYPE_KO.get(c["type"], c["type"]),
+                         "about": str(c.get("about")) if c.get("about") else None, "rule": ", ".join(rule) or None,
+                         "pi": badge("개인정보", "bad") if c.get("personal") else None})
+        secs.append({"kind": "table", "id": "t-" + t["name"], "title": f"{lab(t['name'])} ({t['name']})", "lead": str(t.get("about")) if t.get("about") else None,
+                     "columns": [{"key": "col", "label": "칸"}, {"key": "type", "label": "종류", "nw": True}, {"key": "about", "label": "뜻"},
+                                 {"key": "rule", "label": "규칙"}, {"key": "pi", "label": "", "nw": True, "quiet": True}], "rows": rows})
+        sample = t.get("sample") or []
+        if sample:
+            cols = [c for c in all_columns(t) if not c.get("auto")]
+            secs.append({"kind": "table", "id": "s-" + t["name"], "title": f"{lab(t['name'])} -- 예시 (만든 값)", "count": len(sample),
+                         "columns": [{"key": c["name"], "label": str(c.get("label") or c["name"])} for c in cols],
+                         "rows": [{c["name"]: (None if r.get(c["name"]) is None else str(_cellv(c, r.get(c["name"])))) for c in cols} for r in sample if isinstance(r, dict)]})
+        else:
+            blank4.append(f"{lab(t['name'])} 의 예시 값 (sample)")
+        if not t.get("about"):
+            blank4.append(f"{lab(t['name'])} 의 한 줄 설명 (about)")
+    out["data"] = page("data", secs, blanks=blank4, wide=True)
+    # 9 진행 상황
+    od = mp.parent / "out"
+    stale = stale_outputs(model, od)
+    secs = [{"kind": "cards", "id": "summary", "items": [
+        {"label": "고칠 것", "value": len(errs), "tone": "bad" if errs else "ok", "href": "#check"}, {"label": "참고", "value": len(warns), "href": "#check"},
+        {"label": "알고 싶은 것", "value": len(goals), "tone": "ok" if goals else "warn"},
+        {"label": "낡은 설명서·SQL", "value": len(stale), "tone": "bad" if stale else "ok", "href": "files/"}]}]
+    secs.append({"kind": "list", "id": "check", "title": "검사 (check)", "count": len(errs) + len(warns),
+                 "items": [{"text": e, "badge": "고칠 것", "tone": "bad"} for e in errs] + [{"text": w, "badge": "참고"} for w in warns],
+                 "empty": "고칠 것이 없습니다 -- 좋아요!"})
+    secs.append({"kind": "table", "id": "goals", "title": "알고 싶은 것과 확인 쿼리", "count": len(goals), "empty": "알고 싶은 것(goals)이 없습니다",
+                 "lead": "try · verify 가 예시 값으로 실제로 돌려 봅니다: python datalight.py verify data/model.light.json",
+                 "columns": [{"key": "say", "label": "알고 싶은 것"}, {"key": "sql", "label": "확인 쿼리"}, {"key": "expect", "label": "기대", "nw": True}],
+                 "rows": [{"say": str(g.get("say") or ""), "sql": mono(g.get("sql") or ""),
+                           "expect": "1행 이상" if g.get("expect") is None else (f"{g['expect']}행" if isinstance(g.get("expect"), int) else "정해진 결과")} for g in goals]})
+    if stale:
+        secs.append({"kind": "list", "id": "stale", "title": "정본과 다른 파일", "items": [f"out/{x}" for x in stale],
+                     "lead": "정본을 고친 뒤 다시 만들지 않았습니다: python datalight.py build data/model.light.json"})
+    out["progress"] = page("progress", secs, blanks=[], subtitle="검사 · 알고 싶은 것 · 만든 파일")
+    # 10 파일
+    rows = [{"what": "정본", "path": mono(rel), "fp": mono(src[0]["fingerprint"]), "state": badge("있음", "ok")}]
+    for name, what in (("schema.sql", "SQL (표 만들기)"), ("erd.md", "그림 (mermaid)"), ("spec.md", "정의서"), ("spec.xlsx", "정의서 (엑셀)"), ("book.html", "데이터 설명서")):
+        f = od / name
+        if f.is_file():
+            try:
+                fr = f.resolve().relative_to(root).as_posix()
+            except ValueError:
+                fr = f.name
+            rows.append({"what": what, "path": mono(fr), "fp": mono(_sha12(f.read_bytes())),
+                         "state": badge("정본과 다름", "bad") if name in stale else badge("있음", "ok")})
+    secs = [{"kind": "text", "id": "how", "tone": "note", "text": "이 사이트는 정본에서 만듭니다. 보기만 하는 화면이라 여기서 고치지 않습니다 -- 정본을 고치고 "
+             "python datalight.py site data/model.light.json 으로 다시 만듭니다 (파일로 열면 됩니다 -- 서버 · 포트가 없습니다)."},
+            {"kind": "table", "id": "sources", "title": "재료와 만든 파일", "count": len(rows),
+             "columns": [{"key": "what", "label": "무엇"}, {"key": "path", "label": "파일"}, {"key": "state", "label": "", "nw": True}, {"key": "fp", "label": "지문", "nw": True}],
+             "rows": rows}]
+    out["files"] = page("files", secs, sources=[], subtitle="재료 파일 · 만든 파일")
+    return out
+
+
+def _site_js(var: str, data: dict) -> str:
+    j = json.dumps(data, ensure_ascii=False, separators=(",", ":")).replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
+    return f"window.OUTPUTS=window.OUTPUTS||{{}};window.OUTPUTS.{var}={j};\n"
+
+
+SITE_SUB_RX = re.compile(r"^[A-Za-z0-9_~-][A-Za-z0-9_.~-]{0,119}(?:/[A-Za-z0-9_~-][A-Za-z0-9_.~-]{0,119}){0,3}$")
+SITE_LABELS = {"data-light": "data-expert-framework-light", "dev-light": "dev-process-light"}      # 사양 frameworks 의 가벼운 판 둘
+
+
+def _site_rel_ok(rel) -> bool:
+    return (isinstance(rel, str) and bool(rel) and not rel.startswith("/") and "\\" not in rel and ":" not in rel
+            and all(x not in ("", ".", "..") for x in rel.split("/")))
+
+
+def site_page(pid: str, secs: list, *, framework: str, framework_version: str, mark: str, now: str, source: list, sub=None,
+              blanks=None, title=None, subtitle=None, read=None, wide=False, crumb=None) -> dict:
+    """쪽 JSON 하나 (사양 outputs_version 1 의 머리 + body.sections) -- 가벼운 판은 늘 '계산된 쪽'(확인 대상 아님)."""
+    bl = [str(x) for x in (blanks or [])]
+    lb = dict((x[0], x[2]) for x in SITE_PAGES)[pid]
+    return {"outputs_version": 1, "page": pid, "sub": sub, "framework": framework, "framework_version": framework_version, "level": "light",
+            "generated_at": now, "title": title or lb, "subtitle": subtitle, "read": {"text": read if read is not None else SITE_READ.get(pid, ""),
+                                                                                       "check": [], "guides": []},
+            "source": source, "confirm": {"state": "computed", "by": None, "at": None, "quote": None}, "basis": [],
+            "blanks": {"count": len(bl), "total": max(len(bl), 1), "items": [{"id": None, "label": x} for x in bl[:60]]},
+            "crumb": crumb or [], "wide": wide, "body": {"sections": secs}}
+
+
+def write_site(site, root, pages: dict, *, framework: str, framework_version: str, project, mark: str, now: str, index=(), subs=(),
+               menu_subs=None, default_site=None) -> dict:
+    """가벼운 판 사이트 쓰기 (파일 모드 -- 서버 · 포트 없음). data-light 와 dev-process-light 가 같이 쓴다.
+
+    pages: SITE_PAGES 의 쪽 id → 쪽 JSON (5쪽 모두). subs: (쪽 id, 부분 이름, 쪽 JSON) -- 주소 <쪽>/<부분>/.
+    menu_subs: 쪽 id → 메뉴 아래 줄 [{id, label, href, n}]. index: 찾기 색인 [{label, sub, kind, href}].
+    사이트 폴더는 이 도구만 쓰는 곳 -- 뿌리 · 뿌리를 품는 폴더 · git 저장소 · 남이 만든 폴더(manifest 없음)에는 쓰지 않는다.
+    지난번에 쓴 파일 중 이번에 없는 것은 그때 쓴 내용 그대로일 때만 지운다 (사용자가 넣거나 고친 파일은 둔다)."""
+    import hashlib
+    if not (SITE_SHELL / "page.html").is_file():
+        raise ValueError("화면 틀 사본이 없습니다 (data-light/site/shell) -- 스킬을 다시 설치합니다")
+    if framework not in SITE_LABELS:
+        raise ValueError(f"모르는 판: {framework}")
+    root, site = Path(root).resolve(), Path(site).resolve()
+    if site == root or site in root.parents:
+        raise ValueError("사이트 폴더로 프로젝트 폴더(또는 그 위)를 쓸 수 없습니다 -- 비어 있는 따로 된 폴더를 줍니다")
+    man_p = site / "manifest.json"
+    try:
+        old = json.loads(man_p.read_text(encoding="utf-8")) if man_p.is_file() else {}
+    except ValueError:
+        old = {}
+    if not isinstance(old, dict):
+        old = {}
+    if site.is_dir() and any(x.name != ".gitignore" for x in site.iterdir()) and not old.get("outputs_site"):
+        raise ValueError(f"{site} 가 비어 있지 않은데 이 도구가 만든 사이트가 아닙니다 -- 비어 있는 폴더를 줍니다")
+    if (site / ".git").exists():
+        raise ValueError("사이트 폴더가 git 저장소입니다 -- 따로 된 폴더를 줍니다")
+    missing = [x[0] for x in SITE_PAGES if not isinstance(pages.get(x[0]), dict)]
+    if missing:
+        raise ValueError("쪽이 빠졌습니다: " + ", ".join(missing))
+    site.mkdir(parents=True, exist_ok=True)
+    dflt = Path(default_site).resolve() if default_site else None
+    ign = site.parent if dflt is not None and site == dflt and site.parent.name == "outputs" else site
+    gi = ign / ".gitignore"
+    if not gi.is_file():
+        _write(gi, "# 개발 관리 사이트 -- 커밋하지 않는다 (기록 · 정본에서 다시 만든다)\n*\n")
+    written, hashes = [], {}
+
+    def h12(b: bytes) -> str:
+        return hashlib.sha256(b.replace(b"\r\n", b"\n")).hexdigest()[:12]
+
+    def put(rel: str, data):
+        b = data.encode("utf-8") if isinstance(data, str) else data
+        f = site / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        with open(f, "wb") as fh:
+            fh.write(b)
+        written.append(rel)
+        hashes[rel] = h12(b)
+    for f in sorted((SITE_SHELL / "assets").rglob("*")):
+        if f.is_file():
+            put("assets/" + f.relative_to(SITE_SHELL / "assets").as_posix(), f.read_bytes())
+    tpl = (SITE_SHELL / "page.html").read_text(encoding="utf-8")
+    sv = (SITE_SHELL / "VERSION").read_text(encoding="utf-8").strip()
+    esc = lambda x: html.escape(str(x), quote=True)  # noqa: E731
+    plist, errors = [], []
+    paths = dict((x[0], x[3]) for x in SITE_PAGES)
+
+    def emit(pid: str, sub, d: dict):
+        path = paths[pid] + ((sub + "/") if sub else "")
+        dkey = pid + (("/" + sub) if sub else "")
+        put(f"data/{dkey}.json", json.dumps(d, ensure_ascii=False, indent=1) + "\n")
+        put(f"data/{dkey}.js", _site_js("page", d))
+        put(path + "index.html", tpl.replace("{{TITLE}}", esc(f"{d.get('title') or ''} · {project or ''}")).replace("{{BASE}}", esc("../" * path.count("/")))
+            .replace("{{DATA}}", esc(f"data/{dkey}.js")).replace("{{JSON}}", esc(f"data/{dkey}.json")).replace("{{PAGE}}", esc(pid))
+            .replace("{{SUB}}", esc(sub or "")).replace("{{SHELL}}", esc(sv)))
+        plist.append({"page": pid, "sub": sub, "path": path, "data": f"data/{dkey}.json", "state": "computed", "blanks": d["blanks"]["count"]})
+    for pid, _no, _label, _path in SITE_PAGES:
+        emit(pid, None, pages[pid])
+    taken = {w.casefold() for w in written}
+    for pid, sub, d in subs:
+        if pid not in paths or pid == "overview" or not isinstance(sub, str) or not SITE_SUB_RX.match(sub) or ".." in sub.split("/") \
+                or (paths[pid] + sub + "/index.html").casefold() in taken or not isinstance(d, dict):
+            errors.append(f"{pid}: 부분 쪽 이름이 맞지 않거나 다른 쪽과 겹친다 ({str(sub)[:60]})")
+            continue
+        emit(pid, sub, d)
+        taken = {w.casefold() for w in written}
+    menu = []
+    for pid, no, label, path in SITE_PAGES:
+        ms = [{"id": str(x["id"]), "label": str(x["label"]), "href": str(x["href"]), **({"n": x["n"]} if isinstance(x.get("n"), int) else {})}
+              for x in (menu_subs or {}).get(pid) or [] if isinstance(x, dict) and x.get("id") and x.get("label") and isinstance(x.get("href"), str)]
+        menu.append({"no": no, "id": pid, "label": label, "href": path, "state": "computed", "blanks": pages[pid]["blanks"]["count"], "subs": ms})
+    idx = [{"label": label, "kind": "쪽", "href": path} for pid, no, label, path in SITE_PAGES] + [x for x in index if isinstance(x, dict)]
+    site_obj = {"outputs_version": 1, "framework": framework, "framework_label": SITE_LABELS[framework], "framework_version": framework_version,
+                "level": "light", "level_label": "가벼운 판", "project": project, "generated_at": now, "mark": mark, "shell_version": sv,
+                "menu": menu, "index": idx, "links": []}
+    put("data/site.json", json.dumps(site_obj, ensure_ascii=False, indent=1) + "\n")
+    put("data/site.js", _site_js("site", site_obj))
+    now_cf = {w.casefold() for w in written}
+    old_h = old.get("hashes") if isinstance(old.get("hashes"), dict) else {}
+    for rel in old.get("files") or []:                     # 지난번에 쓴 것 중 이번에 없는 것 -- 사이트 안 · 그때 쓴 내용 그대로인 것만
+        if not _site_rel_ok(rel) or rel in written or rel.casefold() in now_cf or not old_h.get(rel):
+            continue
+        f = site / rel
+        try:
+            if f.is_file() and not f.is_symlink() and site in f.resolve().parents and h12(f.read_bytes()) == old_h[rel]:
+                f.unlink()
+        except OSError:
+            pass
+    _write(man_p, json.dumps({"outputs_site": True, "outputs_version": 1, "generated_at": now, "framework": framework, "level": "light",
+                              "shell_version": sv, "pages": plist, "files": sorted(set(written)), "hashes": hashes, "errors": errors},
+                             ensure_ascii=False, indent=1) + "\n")
+    return {"site": str(site), "index": str(site / "index.html"), "pages": len([x for x in plist if not x["sub"]]), "subs": len([x for x in plist if x["sub"]]),
+            "blanks": sum(p["blanks"] for p in plist if not p["sub"]), "shell": sv, "errors": errors}
+
+
+def site_index(model: dict) -> list:
+    """찾기 색인 -- 표 · 하는 일."""
+    idx = [{"label": t.get("label") or t["name"], "sub": t["name"], "kind": "표", "href": "data/#t-" + t["name"]} for t in ordered(model)]
+    idx += [{"label": str(w["name"]), "sub": str(w.get("who") or ""), "kind": "일", "href": "business/#w-" + str(i + 1)}
+            for i, w in enumerate(w for w in model.get("works") or [] if isinstance(w, dict) and w.get("name"))]
+    return idx
+
+
+def build_site(model_path, out=None) -> dict:
+    """개발 관리 사이트 (가벼운 판) -- 정본에서 쪽 JSON 5개 + 공통 화면 틀(사본). 파일로 연다 (서버 · 포트 없음).
+    사이트 폴더는 이 도구만 쓰는 곳 -- data/outputs/ 에 .gitignore 를 둔다 (커밋하지 않는다)."""
+    import secrets
+    model = load(model_path)
+    root = site_root(model_path)
+    dflt = root / "data" / "outputs" / "site"
+    now = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    mark = secrets.token_hex(8)
+    pages = site_pages(model, model_path, mark, now)
+    return write_site(Path(out) if out else dflt, root, pages, framework="data-light", framework_version=__version__, project=model.get("project"),
+                      mark=mark, now=now, index=site_index(model), default_site=dflt)
+
+
 VIEWER_DIR = Path(__file__).resolve().parents[1] / "viewer"
 
 
@@ -1924,6 +2269,8 @@ def main(argv=None) -> int:
     p = sp.add_parser("view", help="웹 ERD 그림을 브라우저로 (보기 전용, 정본을 고치면 곧바로 다시 그림)")
     p.add_argument("model", nargs="?", default="data/model.light.json"); p.add_argument("--port", type=int, default=8820)
     p.add_argument("--no-open", action="store_true"); p.add_argument("--no-watch", action="store_true")
+    p = sp.add_parser("site", help="개발 관리 사이트 (가벼운 판 5쪽) -- data/outputs/site/index.html 을 파일로 연다")
+    p.add_argument("model"); p.add_argument("--out", default=None)
     p = sp.add_parser("upgrade"); p.add_argument("model"); p.add_argument("--out", default="model.json")
     p.add_argument("--schema", default="app"); p.add_argument("--pi-schema")
     p.add_argument("--facts", help="전문판 질문 대장(data/facts.json)으로 만드는 것(product)도 옮긴다")
@@ -1932,6 +2279,14 @@ def main(argv=None) -> int:
 
     if a.cmd == "view":
         return view(a.model, port=a.port, open_browser=not a.no_open, watch=not a.no_watch)
+    if a.cmd == "site":
+        try:
+            r = build_site(a.model, a.out)
+        except ValueError as exc:
+            print(f"사이트를 만들지 않았습니다: {exc}")
+            return 1
+        print(f"개발 관리 사이트 → {r['index']} (쪽 {r['pages']} · 빈칸 {r['blanks']} · 화면 틀 {r['shell']}) -- 브라우저로 이 파일을 엽니다")
+        return 0
     if a.cmd == "check":
         errs, warns = check(load(a.model))
         for w in warns:

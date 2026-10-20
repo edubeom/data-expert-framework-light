@@ -51,6 +51,8 @@ Supabase 로 갈 때 "이 프로젝트는" 의 **누가 쓰나** 답을 정본�
   (새 버전이 만드는 SQL 이 달라질 수 있어, 다시 만들지 않으면 `verify` 가 "정본과 다릅니다"로 멈춘다).
 - 데이터가 든 표를 일부러 정본 밖에 두려면 정본에 `"outside": ["log"]` -- 그 표는 데이터 보호 검사에서 빠진다.
 - `import apply` 는 SQLite 전용이다. 정본이 PostgreSQL(Supabase) 이면 멈춘다 -- Supabase 에는 Table Editor 의 CSV 가져오기로 넣는다.
+- 개발 관리 사이트는 dev-process-light 의 `light-portal` 이 `dev-notes/outputs/site/` 에 만든다 -- 2 업무 설명 · 4 데이터 쪽은 이 스킬의 생성기를 그대로 쓴다.
+  따로 `datalight.py site` 를 돌리지 않아도 된다 (돌리면 `data/outputs/site/` 에 데이터만의 사이트가 하나 더 생긴다).
 
 ## 돌아가기
 설계·확인·만들기가 끝나면 dev-process-light 흐름(화면 만들기 등)으로 돌아간다. 이후 저장할 것이 바뀌면 정본을 고치고 `build → verify` 를 다시 돌린다 (훅을 설치했으면 저장할 때 자동).
