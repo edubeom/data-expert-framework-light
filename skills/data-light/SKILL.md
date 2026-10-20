@@ -21,7 +21,7 @@ description: 비전공자·작은 시스템을 위한 쉬운 데이터 설계. "
 | `import plan <csv/xlsx> --table 이름` → `import apply …` | 파일을 테이블로 (사용자 확인 후) |
 | `import schema data/app.db` | 이미 있는 SQLite DB 에서 정본 초안 (이름표는 비어 있음) |
 | `verify <model> [--mutate]` | **통과/실패 관문** — 설계 검사 + 성공 기준 + 규칙 + `out/` 최신 + DB 데이터 보호 (exit 0/1) |
-| `hook install [--no-ci] [--append]` · `hook status` | 커밋할 때마다 `verify` 자동 실행 + GitHub CI 파일 + `.gitignore` · 설치된 버전 확인 |
+| `hook install [--no-ci] [--append] [--update ci\|gitignore\|all] [--keep …]` · `hook status` | 커밋할 때마다 `verify` 자동 실행 + GitHub CI 파일 + `.gitignore` · 설치된 버전 확인. 직접 고친 CI 파일 · 지운 줄은 말없이 덮거나 되살리지 않고 `물어볼 것:` 으로 알린다 (종료 3) -- 사용자 답대로 `--update` · `--keep` |
 | `upgrade <model> [--facts …] [--blueprint …]` | 전문판(data-expert-framework) model.json 으로 졸업 (만드는 것 → 질문 대장, 하는 일 → 시스템 청사진) |
 
 **원칙 — "확인해 줘" 대신 확인할 수단을 남긴다.** 무엇이 되면 완성인지(성공 기준)를 먼저 정해 정본에 쿼리로 적고,

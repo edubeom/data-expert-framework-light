@@ -47,7 +47,7 @@ import sys
 from pathlib import Path
 
 FORMAT = "data-light/1"
-__version__ = "0.8.1"
+__version__ = "0.9.0"
 NAME = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 TYPES = ("id", "ref", "text", "long_text", "int", "number", "money", "bool", "date", "datetime", "owner")
 ACCESS = ("members", "own", "read")
@@ -1301,12 +1301,40 @@ def hook_status(repo=".") -> tuple[bool, list[str]]:
     else:
         same = False
         lines.append("도구 사본: 없음")
+    st = _settings(repo)
+    wf = repo / ".github" / "workflows" / "data-light.yml"
+    if st.get("ci", True) and wf.exists():
+        cur = _fp(wf.read_text(encoding="utf-8", errors="replace"))
+        if cur != _fp(CI):
+            kept = st.get("ci_keep") == cur
+            lines.append("CI 파일: " + ("직접 고친 것을 둠 (사용자 결정)" if kept else "새 판과 다름 -- `hook install` 이 새 판으로 바꾸거나(손대지 않은 예전 판) 물어볼 것을 알린다"))
+            same &= kept
+    elif st.get("ci", True) and st.get("ci_fp"):
+        lines.append("CI 파일: 지웠음 -- `hook install` 이 물어볼 것을 알린다")
+        same = False
+    gi = repo / ".gitignore"
+    have = set(gi.read_text(encoding="utf-8").splitlines()) if gi.exists() else set()
+    gone = sorted(x for x in GITIGNORE_LINES if x in set(st.get("gitignore") or []) and x not in have)
+    if gone and gone != sorted(st.get("gitignore_keep") or []):
+        lines.append(".gitignore: data-light 줄을 지움 (" + ", ".join(gone) + ") -- `hook install` 이 물어볼 것을 알린다")
+        same = False
     lines.append("결과: 최신" if same else "결과: 버전이 다릅니다 -- `hook install` 로 다시 설치")
     return same, lines
 
 
-def hook_install(repo=".", ci=None, append=False) -> list[str]:
-    """ci: True/False/None(=remembered choice, default on). append: add our block to someone else's pre-commit"""
+ASK = "물어볼 것: "                 # hook install 의 결과 줄 -- 직접 고친 CI 파일 · 지운 .gitignore 줄 (사용자가 고른다)
+_OLD_CI = ("3f7fd500e44293e3", "ecf2a9a2cb1ef660")   # 예전 판 CI 파일의 지문 -- 손대지 않은 예전 판은 묻지 않고 새 판으로
+
+
+def _fp(text: str) -> str:
+    import hashlib
+    return hashlib.sha256(text.replace("\r", "").encode("utf-8")).hexdigest()[:16]
+
+
+def hook_install(repo=".", ci=None, append=False, update=(), keep=()) -> list[str]:
+    """ci: True/False/None(=remembered choice, default on). append: add our block to someone else's pre-commit.
+    update/keep: ('ci', 'gitignore', 'all') -- 직접 고친 CI 파일 · 지운 .gitignore 줄을 사용자가 고른 대로 (소유자 원칙 2026-10-20:
+    새 판 반영이 원칙, 다르면 말없이 정하지 않고 묻는다 -- 결과에 '물어볼 것:' 줄)."""
     repo = Path(repo).resolve()
     if _git(repo, "rev-parse", "--is-inside-work-tree") != "true":
         raise SystemExit(f"{repo} 는 git 저장소가 아닙니다 (git init 먼저)")
@@ -1316,6 +1344,7 @@ def hook_install(repo=".", ci=None, append=False) -> list[str]:
     tool.write_bytes(Path(__file__).read_bytes())
     done.append(f".data-light/datalight.py {__version__} (도구 사본 -- 커밋해 두면 CI 와 다른 사람도 같은 검사)")
     st = _settings(repo)
+    ci_explicit = ci
     if ci is None:
         ci = st.get("ci", True)
     if st.get("ci", True) != ci:
@@ -1357,20 +1386,66 @@ def hook_install(repo=".", ci=None, append=False) -> list[str]:
         done.append(f"주의: 이 컴퓨터의 sh 가 훅을 읽지 못해 설치하지 않았습니다 ({bad}) -- 커밋은 막지 않습니다. "
                     "verify 는 손으로 돌리고, data-expert-framework-light 저장소에 알려 주세요")
     wf = repo / ".github" / "workflows" / "data-light.yml"
+    st = _settings(repo)
+    up = lambda k: k in update or "all" in update      # noqa: E731
+    kp = lambda k: k in keep or "all" in keep          # noqa: E731
+    want = _fp(CI)
     if not ci:
         done.append("CI 파일은 만들지 않음 (--no-ci 를 기억해 두었습니다. 다시 켜려면 `hook install --ci`)")
     elif not wf.exists():
-        wf.parent.mkdir(parents=True, exist_ok=True)
-        _write(wf, CI)
-        done.append(".github/workflows/data-light.yml (GitHub 에 올릴 때 자동 검사)")
+        if st.get("ci_fp") and not up("ci") and ci_explicit is not True:     # 전에 만든 것을 지웠다 -- 말없이 되살리지 않는다
+            done.append(ASK + "CI 파일(.github/workflows/data-light.yml)을 지웠습니다 -- 사용자에게 물어보고: 다시 만들기 `hook install --ci` · "
+                        "만들지 않기 `hook install --no-ci` (권장: 다시 만들기 -- GitHub 에 올릴 때 자동 검사)")
+        else:
+            wf.parent.mkdir(parents=True, exist_ok=True)
+            _write(wf, CI)
+            st["ci_fp"] = want
+            done.append(".github/workflows/data-light.yml (GitHub 에 올릴 때 자동 검사)")
+    else:
+        cur = _fp(wf.read_text(encoding="utf-8", errors="replace"))
+        if cur == want:
+            st["ci_fp"] = want
+        elif cur == st.get("ci_fp") or cur in _OLD_CI or up("ci"):
+            if cur not in (st.get("ci_fp"), *_OLD_CI):
+                bk = repo / ".data-light" / "backup" / dt.datetime.now().strftime("%Y%m%d-%H%M%S") / "data-light.yml"
+                bk.parent.mkdir(parents=True, exist_ok=True)
+                bk.write_bytes(wf.read_bytes())
+                done.append(f"CI 파일: 직접 고친 것은 {bk.relative_to(repo).as_posix()} 에 남김 (사용자 결정)")
+            _write(wf, CI)
+            st["ci_fp"] = want
+            st.pop("ci_keep", None)
+            done.append(".github/workflows/data-light.yml 을 새 판으로 (GitHub 에 올릴 때 자동 검사)")
+        elif kp("ci") or st.get("ci_keep") == cur:
+            st["ci_keep"] = cur
+            done.append("CI 파일: 직접 고친 것을 둠 (사용자 결정 -- 새 판과 다름)")
+        else:
+            done.append(ASK + "CI 파일(.github/workflows/data-light.yml)을 직접 고쳤습니다 -- 새 판과 다릅니다. 사용자에게 물어보고: "
+                        "새 판으로 `hook install --update ci` (지금 것은 .data-light/backup/ 에) · 그대로 `hook install --keep ci` (권장: 새 판으로)")
     gi = repo / ".gitignore"
     have = gi.read_text(encoding="utf-8").splitlines() if gi.exists() else []
-    add = [x for x in GITIGNORE_LINES if x not in have]
+    rec = set(st.get("gitignore") or [])
+    gone = [x for x in GITIGNORE_LINES if x in rec and x not in have]          # 전에 넣었는데 지운 줄 -- 말없이 되살리지 않는다
+    if gone and (kp("gitignore") or sorted(gone) == sorted(st.get("gitignore_keep") or [])):
+        st["gitignore_keep"] = sorted(gone)
+        done.append(".gitignore: 지운 줄을 그대로 둠 (사용자 결정): " + ", ".join(gone))
+        gone_ask = []
+    else:
+        gone_ask = [] if up("gitignore") else gone
+    add = [x for x in GITIGNORE_LINES if x not in have and x not in gone_ask and (x not in rec or up("gitignore"))]
     if add:
         with open(gi, "a", encoding="utf-8") as f:
             f.write(("\n" if have and have[-1] else "") + "# data-light: 실제 데이터·가져오기 계획·비밀 값은 올리지 않는다\n"
                     + "\n".join(add) + "\n")
         done.append(".gitignore 에 " + ", ".join(add))
+        if up("gitignore"):
+            st.pop("gitignore_keep", None)
+    if gone_ask:
+        done.append(ASK + ".gitignore 에서 data-light 줄을 지웠습니다 (" + ", ".join(gone_ask) + ") -- 실제 데이터 · 비밀 값이 올라갈 수 있습니다. "
+                    "사용자에게 물어보고: 다시 넣기 `hook install --update gitignore` · 그대로 `hook install --keep gitignore` (권장: 다시 넣기)")
+    now = set(gi.read_text(encoding="utf-8").splitlines()) if gi.exists() else set()
+    st["gitignore"] = sorted(rec | {x for x in GITIGNORE_LINES if x in now})
+    if st != _settings(repo):
+        _write(repo / ".data-light" / "settings.json", json.dumps(st, ensure_ascii=False, indent=2) + "\n")
     return done
 
 
@@ -2265,6 +2340,10 @@ def main(argv=None) -> int:
     g = q.add_mutually_exclusive_group(); g.add_argument("--no-ci", dest="ci", action="store_false", default=None)
     g.add_argument("--ci", dest="ci", action="store_true")
     q.add_argument("--append", action="store_true", help="이미 있는 pre-commit 끝에 덧붙임")
+    q.add_argument("--update", action="append", default=[], choices=["ci", "gitignore", "all"],
+                   help="직접 고친 CI 파일 · 지운 .gitignore 줄을 새 판으로 (사용자가 고른 것)")
+    q.add_argument("--keep", action="append", default=[], choices=["ci", "gitignore", "all"],
+                   help="직접 고친 CI 파일 · 지운 .gitignore 줄을 그대로 (사용자가 고른 것)")
     q = hsp.add_parser("status"); q.add_argument("--repo", default=".")
     p = sp.add_parser("view", help="웹 ERD 그림을 브라우저로 (보기 전용, 정본을 고치면 곧바로 다시 그림)")
     p.add_argument("model", nargs="?", default="data/model.light.json"); p.add_argument("--port", type=int, default=8820)
@@ -2358,9 +2437,13 @@ def main(argv=None) -> int:
         print("\n".join(lines))
         return 0 if same else 1
     if a.cmd == "hook":
-        for d in hook_install(a.repo, a.ci, a.append):
-            print("만듦: " + d)
+        res = hook_install(a.repo, a.ci, a.append, a.update, a.keep)
+        for d in res:
+            print(d if d.startswith(ASK) else "만듦: " + d)
         print("이제 정본을 고쳐 커밋하면 verify 가 자동으로 돕니다. 시험: 정본에 일부러 오류를 넣고 커밋해 보세요")
+        if any(d.startswith(ASK) for d in res):
+            print("위 '물어볼 것'은 사용자에게 물어 그 답대로 다시 실행한다 (답은 dev-notes/DECISIONS.md 에 [사용자] 로)")
+            return 3
         return 0
     if a.cmd == "upgrade":
         if a.facts and os.path.exists(a.facts):

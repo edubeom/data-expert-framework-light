@@ -1314,5 +1314,68 @@ class V08(unittest.TestCase):
             self.assertFalse((out / "progress" / "a" / "index.html").exists())               # 그대로인 지난 파일은 지운다
             self.assertTrue((out / "data" / "progress" / "b.json").is_file())                # 고친 파일은 둔다
 
+
+class V09(unittest.TestCase):
+    """0.9.0 -- 새 판 반영이 원칙, 직접 고친 것은 말없이 정하지 않고 묻는다 (소유자 원칙 2026-10-20): CI 파일 · 지운 .gitignore 줄."""
+
+    def _repo(self, d):
+        subprocess.run(["git", "init", "-q"], cwd=d, capture_output=True)
+        dl.hook_install(d)
+        return Path(d, ".github", "workflows", "data-light.yml"), Path(d, ".gitignore")
+
+    @unittest.skipUnless(shutil.which("git"), "git 없음")
+    def test_edited_ci_file_is_asked_then_updated_or_kept(self):
+        with tempfile.TemporaryDirectory() as d:
+            wf, gi = self._repo(d)
+            self.assertEqual(wf.read_text(encoding="utf-8"), dl.CI)
+            wf.write_text(dl.CI + "# 우리 팀 단계\n", encoding="utf-8")
+            done = dl.hook_install(d)
+            self.assertTrue(any(x.startswith(dl.ASK) and "CI 파일" in x for x in done))
+            self.assertIn("우리 팀 단계", wf.read_text(encoding="utf-8"))                      # 덮지 않았다
+            self.assertFalse(dl.hook_status(d)[0])
+            done = dl.hook_install(d, keep=["ci"])
+            self.assertFalse(any(x.startswith(dl.ASK) for x in done))
+            self.assertTrue(dl.hook_status(d)[0])                                            # 고른 대로 -- 다시 묻지 않는다
+            self.assertFalse(any(x.startswith(dl.ASK) for x in dl.hook_install(d)))
+            dl.hook_install(d, update=["ci"])
+            self.assertEqual(wf.read_text(encoding="utf-8"), dl.CI)
+            self.assertTrue(list(Path(d, ".data-light", "backup").rglob("data-light.yml")))
+            wf.write_text(dl.CI.replace("verify", "verify ", 1), encoding="utf-8")
+            st = json.loads(Path(d, ".data-light", "settings.json").read_text(encoding="utf-8"))
+            st["ci_fp"] = dl._fp(wf.read_text(encoding="utf-8"))                             # 지난번에 이 도구가 쓴 그대로 (예전 판)
+            Path(d, ".data-light", "settings.json").write_text(json.dumps(st), encoding="utf-8")
+            done = dl.hook_install(d)
+            self.assertFalse(any(x.startswith(dl.ASK) for x in done))
+            self.assertEqual(wf.read_text(encoding="utf-8"), dl.CI)                            # 손대지 않은 예전 판은 묻지 않고 새 판
+
+    @unittest.skipUnless(shutil.which("git"), "git 없음")
+    def test_deleted_ci_file_and_ignore_lines_are_not_silently_restored(self):
+        with tempfile.TemporaryDirectory() as d:
+            wf, gi = self._repo(d)
+            wf.unlink()
+            gi.write_text(gi.read_text(encoding="utf-8").replace(".env\n", ""), encoding="utf-8")
+            done = dl.hook_install(d)
+            asks = [x for x in done if x.startswith(dl.ASK)]
+            self.assertEqual(len(asks), 2, done)
+            self.assertFalse(wf.exists())
+            self.assertNotIn(".env", gi.read_text(encoding="utf-8").splitlines())
+            self.assertFalse(dl.hook_status(d)[0])
+            r = run("hook", "install", "--repo", d)
+            self.assertEqual(r.returncode, 3)
+            self.assertIn("물어볼 것", r.stdout)
+            dl.hook_install(d, ci=True, update=["gitignore"])                                  # 사용자: 둘 다 다시
+            self.assertTrue(wf.exists())
+            self.assertIn(".env", gi.read_text(encoding="utf-8").splitlines())
+            self.assertTrue(dl.hook_status(d)[0])
+            gi.write_text(gi.read_text(encoding="utf-8").replace(".env\n", ""), encoding="utf-8")
+            dl.hook_install(d, keep=["gitignore"])                                             # 사용자: 지운 채로
+            self.assertNotIn(".env", gi.read_text(encoding="utf-8").splitlines())
+            self.assertFalse(any(x.startswith(dl.ASK) for x in dl.hook_install(d)))
+            self.assertTrue(dl.hook_status(d)[0])
+            dl.hook_install(d, ci=False)                                                        # --no-ci 는 그대로 기억
+            wf.unlink()
+            self.assertFalse(any(x.startswith(dl.ASK) for x in dl.hook_install(d)))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)
