@@ -47,7 +47,7 @@ import sys
 from pathlib import Path
 
 FORMAT = "data-light/1"
-__version__ = "0.8.0"
+__version__ = "0.8.1"
 NAME = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 TYPES = ("id", "ref", "text", "long_text", "int", "number", "money", "bool", "date", "datetime", "owner")
 ACCESS = ("members", "own", "read")

@@ -34,7 +34,9 @@ def _sha(b: bytes) -> str:
 def fingerprint(d: Path) -> str:
     """전문판 outputs.shell_fingerprint 와 같은 셈 -- 상대 경로와 내용(줄 끝 맞춤)."""
     h = hashlib.sha256()
-    for f in sorted(p for p in d.rglob("*") if p.is_file() and "__pycache__" not in p.parts and p.name != ".DS_Store"):
+    # 상대 경로 글자로 정렬 -- Windows 의 경로 비교는 대소문자를 무시해 순서(와 지문)가 리눅스와 달라진다
+    for f in sorted((p for p in d.rglob("*") if p.is_file() and "__pycache__" not in p.parts and p.name != ".DS_Store"),
+                    key=lambda p: p.relative_to(d).as_posix()):
         h.update(f.relative_to(d).as_posix().encode("utf-8") + b"\0")
         h.update(f.read_bytes().replace(b"\r\n", b"\n") + b"\0")
     return h.hexdigest()[:16]

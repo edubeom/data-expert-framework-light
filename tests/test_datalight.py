@@ -1188,6 +1188,21 @@ class V08(unittest.TestCase):
         self.assertEqual(lock["version"], (SKILL / "site" / "shell" / "VERSION").read_text(encoding="utf-8").strip())
         self.assertIn("MIT", (SKILL / "site" / "NOTICE.md").read_text(encoding="utf-8"))
 
+    def test_shell_fingerprint_order_is_by_path_text(self):
+        sys.path.insert(0, str(ROOT / "tools"))
+        import hashlib
+        import update_shell
+        with tempfile.TemporaryDirectory() as d:
+            for rel in ("README.md", "assets/x.js", "VERSION", "page.html"):
+                f = Path(d) / rel
+                f.parent.mkdir(parents=True, exist_ok=True)
+                with open(f, "wb") as fh:
+                    fh.write(rel.encode("utf-8") + b"\r\n")
+            h = hashlib.sha256()
+            for rel in sorted(("README.md", "assets/x.js", "VERSION", "page.html")):           # 글자 순 (Windows 의 대소문자 무시 순서가 아니라)
+                h.update(rel.encode("utf-8") + b"\0" + rel.encode("utf-8") + b"\n\0")
+            self.assertEqual(update_shell.fingerprint(Path(d)), h.hexdigest()[:16])
+
     def test_site_has_five_pages_with_spec_headers(self):
         with tempfile.TemporaryDirectory() as d:
             root, m = self._site(d)

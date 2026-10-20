@@ -48,7 +48,7 @@
     if (/[\x00-\x20\x7f\\]/.test(p)) return null;
     if (/^https?:\/\/[^\/]/i.test(p)) return p;
     var i = p.indexOf("#"), path = i >= 0 ? p.slice(0, i) : p;
-    if (!/^(?:[A-Za-z0-9_.~-]+\/?)*$/.test(path)) return null;
+    if (!/^(?:[A-Za-z0-9_.~-]+\/)*[A-Za-z0-9_.~-]*$/.test(path)) return null;   // 조각/ 의 되풀이 -- 되짚기가 폭발하지 않게
     if (path.split("/").indexOf("..") >= 0 || path.split("/").indexOf(".") >= 0) return null;
     return p;
   }
