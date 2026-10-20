@@ -1302,28 +1302,51 @@ def hook_status(repo=".") -> tuple[bool, list[str]]:
         same = False
         lines.append("도구 사본: 없음")
     st = _settings(repo)
+    asks = []                                  # 버전은 같아도 사용자가 고를 것 (직접 고친 CI 파일 · 지운 것)
     wf = repo / ".github" / "workflows" / "data-light.yml"
     if st.get("ci", True) and wf.exists():
         cur = _fp(wf.read_text(encoding="utf-8", errors="replace"))
         if cur != _fp(CI):
-            kept = st.get("ci_keep") == cur
-            lines.append("CI 파일: " + ("직접 고친 것을 둠 (사용자 결정)" if kept else "새 판과 다름 -- `hook install` 이 새 판으로 바꾸거나(손대지 않은 예전 판) 물어볼 것을 알린다"))
-            same &= kept
+            if st.get("ci_keep") == cur:
+                lines.append("CI 파일: 직접 고친 것을 둠 (사용자 결정)")
+            elif cur == st.get("ci_fp") or cur in _OLD_CI:
+                lines.append("CI 파일: 예전 판 -- `hook install` 이 새 판으로 바꾼다")
+                same = False
+            else:
+                lines.append("CI 파일: 직접 고침 (새 판과 다름) -- `hook install` 이 물어볼 것을 알린다")
+                asks.append("CI 파일")
     elif st.get("ci", True) and st.get("ci_fp"):
         lines.append("CI 파일: 지웠음 -- `hook install` 이 물어볼 것을 알린다")
-        same = False
+        asks.append("지운 CI 파일")
     gi = repo / ".gitignore"
-    have = set(gi.read_text(encoding="utf-8").splitlines()) if gi.exists() else set()
+    have = set(gi.read_text(encoding="utf-8-sig", errors="replace").splitlines()) if gi.exists() else set()
     gone = sorted(x for x in GITIGNORE_LINES if x in set(st.get("gitignore") or []) and x not in have)
-    if gone and gone != sorted(st.get("gitignore_keep") or []):
+    if gone and not set(gone) <= set(st.get("gitignore_keep") or []):
         lines.append(".gitignore: data-light 줄을 지움 (" + ", ".join(gone) + ") -- `hook install` 이 물어볼 것을 알린다")
-        same = False
-    lines.append("결과: 최신" if same else "결과: 버전이 다릅니다 -- `hook install` 로 다시 설치")
-    return same, lines
+        asks.append(".gitignore 줄")
+    if not same:
+        lines.append("결과: 버전이 다릅니다 -- `hook install` 로 다시 설치")
+    elif asks:
+        lines.append("결과: 물어볼 것 있음 (" + " · ".join(asks) + ") -- `hook install` 이 내는 `물어볼 것:` 을 사용자에게 보이고 고른 대로")
+    else:
+        lines.append("결과: 최신")
+    return same and not asks, lines
 
 
 ASK = "물어볼 것: "                 # hook install 의 결과 줄 -- 직접 고친 CI 파일 · 지운 .gitignore 줄 (사용자가 고른다)
 _OLD_CI = ("3f7fd500e44293e3", "ecf2a9a2cb1ef660")   # 예전 판 CI 파일의 지문 -- 손대지 않은 예전 판은 묻지 않고 새 판으로
+_PRIOR = "(0.8 이하)"              # settings.json 의 ci_fp -- 0.8 이하가 CI 파일을 만들었다 (지문은 남기지 않았다)
+
+
+def _prior_ignore_lines(text: str):
+    """GITIGNORE_LINES of an installed copy of this tool (0.8 and before kept no record of what they added)"""
+    import ast
+    m = re.search(r"^GITIGNORE_LINES\s*=\s*(\([^)]*\))", text, re.M)
+    try:
+        v = ast.literal_eval(m.group(1)) if m else None
+    except (ValueError, SyntaxError):
+        v = None
+    return [x for x in v if isinstance(x, str)] if isinstance(v, tuple) else None
 
 
 def _fp(text: str) -> str:
@@ -1340,6 +1363,10 @@ def hook_install(repo=".", ci=None, append=False, update=(), keep=()) -> list[st
         raise SystemExit(f"{repo} 는 git 저장소가 아닙니다 (git init 먼저)")
     done = []
     tool = repo / ".data-light" / "datalight.py"
+    hd, shown = _hooks_dir(repo)
+    hook = hd / "pre-commit"
+    old_copy = tool.read_text(encoding="utf-8", errors="replace") if tool.is_file() else ""     # 덮어쓰기 전에: 예전에 설치했나
+    prior = bool(old_copy) or (hook.is_file() and HOOK_MARK in hook.read_text(encoding="utf-8", errors="replace"))
     tool.parent.mkdir(exist_ok=True)
     tool.write_bytes(Path(__file__).read_bytes())
     done.append(f".data-light/datalight.py {__version__} (도구 사본 -- 커밋해 두면 CI 와 다른 사람도 같은 검사)")
@@ -1350,9 +1377,7 @@ def hook_install(repo=".", ci=None, append=False, update=(), keep=()) -> list[st
     if st.get("ci", True) != ci:
         st["ci"] = ci
         _write(repo / ".data-light" / "settings.json", json.dumps(st, ensure_ascii=False, indent=2) + "\n")
-    hd, shown = _hooks_dir(repo)
     where = _hook_label(repo, shown)
-    hook = hd / "pre-commit"
     hd.mkdir(parents=True, exist_ok=True)
     old = hook.read_text(encoding="utf-8", errors="replace") if hook.exists() else ""
     if HOOK_MARK in old:                       # ours (alone or appended) -> replace only our block, keep before and after
@@ -1387,13 +1412,21 @@ def hook_install(repo=".", ci=None, append=False, update=(), keep=()) -> list[st
                     "verify 는 손으로 돌리고, data-expert-framework-light 저장소에 알려 주세요")
     wf = repo / ".github" / "workflows" / "data-light.yml"
     st = _settings(repo)
+    if prior and "gitignore" not in st:       # 0.8 이하가 설치했다: 그때 넣은 줄 · 만든 CI 파일을 기록으로 (지운 것을 말없이 되살리지 않는다)
+        st["gitignore"] = sorted(set(_prior_ignore_lines(old_copy) or GITIGNORE_LINES) & set(GITIGNORE_LINES))
+    if prior and "ci_fp" not in st and st.get("ci", True):
+        st["ci_fp"] = _PRIOR
     up = lambda k: k in update or "all" in update      # noqa: E731
     kp = lambda k: k in keep or "all" in keep          # noqa: E731
     want = _fp(CI)
     if not ci:
         done.append("CI 파일은 만들지 않음 (--no-ci 를 기억해 두었습니다. 다시 켜려면 `hook install --ci`)")
     elif not wf.exists():
-        if st.get("ci_fp") and not up("ci") and ci_explicit is not True:     # 전에 만든 것을 지웠다 -- 말없이 되살리지 않는다
+        if st.get("ci_fp") and kp("ci") and not up("ci") and ci_explicit is not True:   # 사용자: 지운 채로 -- '만들지 않기'로 기억
+            st["ci"] = False
+            st.pop("ci_fp", None)
+            done.append("CI 파일: 지운 채로 둠 (사용자 결정 -- 만들지 않기로 기억. 다시 켜려면 `hook install --ci`)")
+        elif st.get("ci_fp") and not up("ci") and ci_explicit is not True:     # 전에 만든 것을 지웠다 -- 말없이 되살리지 않는다
             done.append(ASK + "CI 파일(.github/workflows/data-light.yml)을 지웠습니다 -- 사용자에게 물어보고: 다시 만들기 `hook install --ci` · "
                         "만들지 않기 `hook install --no-ci` (권장: 다시 만들기 -- GitHub 에 올릴 때 자동 검사)")
         else:
@@ -1422,11 +1455,18 @@ def hook_install(repo=".", ci=None, append=False, update=(), keep=()) -> list[st
             done.append(ASK + "CI 파일(.github/workflows/data-light.yml)을 직접 고쳤습니다 -- 새 판과 다릅니다. 사용자에게 물어보고: "
                         "새 판으로 `hook install --update ci` (지금 것은 .data-light/backup/ 에) · 그대로 `hook install --keep ci` (권장: 새 판으로)")
     gi = repo / ".gitignore"
-    have = gi.read_text(encoding="utf-8").splitlines() if gi.exists() else []
+    try:
+        have = gi.read_text(encoding="utf-8-sig").splitlines() if gi.exists() else []
+    except UnicodeDecodeError:                 # 다른 인코딩에 UTF-8 을 덧붙이면 깨진다 -- 고치지 않고 묻는다
+        done.append(ASK + ".gitignore 가 UTF-8 이 아니라 data-light 줄을 넣지 못했습니다 -- 실제 데이터 · 비밀 값이 올라갈 수 있습니다. "
+                    "사용자에게 물어보고 .gitignore 를 UTF-8 로 저장한 뒤 다시 `hook install`")
+        if st != _settings(repo):
+            _write(repo / ".data-light" / "settings.json", json.dumps(st, ensure_ascii=False, indent=2) + "\n")
+        return done
     rec = set(st.get("gitignore") or [])
     gone = [x for x in GITIGNORE_LINES if x in rec and x not in have]          # 전에 넣었는데 지운 줄 -- 말없이 되살리지 않는다
-    if gone and (kp("gitignore") or sorted(gone) == sorted(st.get("gitignore_keep") or [])):
-        st["gitignore_keep"] = sorted(gone)
+    if gone and not up("gitignore") and (kp("gitignore") or set(gone) <= set(st.get("gitignore_keep") or [])):
+        st["gitignore_keep"] = sorted(gone)          # 지금 지운 줄 -- 이 가운데 몇 줄만 남아도 다시 묻지 않는다 (다시 넣은 줄을 또 지우면 묻는다)
         done.append(".gitignore: 지운 줄을 그대로 둠 (사용자 결정): " + ", ".join(gone))
         gone_ask = []
     else:
@@ -1442,7 +1482,7 @@ def hook_install(repo=".", ci=None, append=False, update=(), keep=()) -> list[st
     if gone_ask:
         done.append(ASK + ".gitignore 에서 data-light 줄을 지웠습니다 (" + ", ".join(gone_ask) + ") -- 실제 데이터 · 비밀 값이 올라갈 수 있습니다. "
                     "사용자에게 물어보고: 다시 넣기 `hook install --update gitignore` · 그대로 `hook install --keep gitignore` (권장: 다시 넣기)")
-    now = set(gi.read_text(encoding="utf-8").splitlines()) if gi.exists() else set()
+    now = set(gi.read_text(encoding="utf-8-sig", errors="replace").splitlines()) if gi.exists() else set()
     st["gitignore"] = sorted(rec | {x for x in GITIGNORE_LINES if x in now})
     if st != _settings(repo):
         _write(repo / ".data-light" / "settings.json", json.dumps(st, ensure_ascii=False, indent=2) + "\n")

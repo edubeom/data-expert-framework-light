@@ -1377,5 +1377,73 @@ class V09(unittest.TestCase):
             self.assertFalse(any(x.startswith(dl.ASK) for x in dl.hook_install(d)))
 
 
+    def _settings(self, d, **change):
+        f = Path(d, ".data-light", "settings.json")
+        st = json.loads(f.read_text(encoding="utf-8"))
+        for k, v in change.items():
+            if v is None:
+                st.pop(k, None)
+            else:
+                st[k] = v
+        f.write_text(json.dumps(st), encoding="utf-8")
+
+    @unittest.skipUnless(shutil.which("git"), "git 없음")
+    def test_upgrade_from_08_still_asks_about_what_was_removed(self):
+        with tempfile.TemporaryDirectory() as d:
+            wf, gi = self._repo(d)
+            self._settings(d, ci_fp=None, gitignore=None)                                       # 0.8 이하는 기록을 남기지 않았다
+            wf.unlink()
+            gi.write_text(gi.read_text(encoding="utf-8").replace(".env\n", ""), encoding="utf-8")
+            done = dl.hook_install(d)
+            self.assertEqual(len([x for x in done if x.startswith(dl.ASK)]), 2, done)
+            self.assertFalse(wf.exists())
+            self.assertNotIn(".env", gi.read_text(encoding="utf-8").splitlines())
+            # 예전 사본이 넣지 않던 줄은 새로 더하는 것 -- 묻지 않고 넣는다
+            self._settings(d, ci_fp=None, gitignore=None)
+            tool = Path(d, ".data-light", "datalight.py")
+            tool.write_text(tool.read_text(encoding="utf-8").replace('"import_plan*.json", ".env")', '"import_plan*.json")'), encoding="utf-8")
+            done = dl.hook_install(d, ci=True)
+            self.assertFalse(any(x.startswith(dl.ASK) for x in done), done)
+            self.assertIn(".env", gi.read_text(encoding="utf-8").splitlines())
+
+    @unittest.skipUnless(shutil.which("git"), "git 없음")
+    def test_non_utf8_gitignore_is_asked_not_mixed(self):
+        with tempfile.TemporaryDirectory() as d:
+            wf, gi = self._repo(d)
+            raw = "# 우리 것\nnode_modules/\n".encode("cp949")
+            gi.write_bytes(raw)
+            done = dl.hook_install(d)
+            self.assertTrue(any(x.startswith(dl.ASK) and "UTF-8" in x for x in done), done)
+            self.assertEqual(gi.read_bytes(), raw)                                               # 섞어 쓰지 않았다
+            ok, lines = dl.hook_status(d)                                                        # 읽다가 멈추지 않는다
+            self.assertFalse(ok)
+            gi.write_bytes(b"\xef\xbb\xbf" + "\n".join(dl.GITIGNORE_LINES).encode("utf-8") + b"\n")   # BOM 이 붙은 UTF-8
+            self.assertFalse(any(x.startswith(dl.ASK) for x in dl.hook_install(d)))
+            self.assertEqual(gi.read_bytes().count(b"data/app.db"), 1)                           # 첫 줄도 알아본다
+
+    @unittest.skipUnless(shutil.which("git"), "git 없음")
+    def test_kept_choices_hold_and_status_separates_asks_from_versions(self):
+        with tempfile.TemporaryDirectory() as d:
+            wf, gi = self._repo(d)
+            gi.write_text(gi.read_text(encoding="utf-8").replace(".env\n", "").replace("data/*.csv\n", ""), encoding="utf-8")
+            ok, lines = dl.hook_status(d)
+            self.assertFalse(ok)
+            self.assertTrue(any(x.startswith("결과: 물어볼 것") for x in lines), lines)           # 버전은 같다 -- 고를 것이 남았다
+            dl.hook_install(d, keep=["gitignore"])
+            with open(gi, "a", encoding="utf-8") as f:
+                f.write(".env\n")                                                              # 한 줄만 다시 넣었다
+            self.assertFalse(any(x.startswith(dl.ASK) for x in dl.hook_install(d)))
+            self.assertTrue(dl.hook_status(d)[0])
+            wf.unlink()
+            self.assertTrue(any(x.startswith(dl.ASK) for x in dl.hook_install(d)))
+            done = dl.hook_install(d, keep=["ci"])                                               # 사용자: 지운 채로
+            self.assertFalse(wf.exists())
+            self.assertFalse(any(x.startswith(dl.ASK) for x in done))
+            self.assertFalse(any(x.startswith(dl.ASK) for x in dl.hook_install(d)))             # '만들지 않기'로 기억
+            self.assertTrue(dl.hook_status(d)[0])
+            dl.hook_install(d, ci=True)
+            self.assertTrue(wf.exists())
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

@@ -47,10 +47,11 @@ Supabase 로 갈 때 "이 프로젝트는" 의 **누가 쓰나** 답을 정본�
 - 코드(화면·API)는 정본의 테이블·칸 이름을 그대로 쓴다. `NAMES.md` 는 정본의 한글 이름표를 따른다.
 - 검사 장치는 **한 번 묻고** `datalight.py hook install` — 정본이 바뀐 저장(커밋)은 `verify` 를 통과해야 한다. 건너뛰지 않는다.
 - `hook install` 이 `.gitignore` 에 넣는 줄: `data/app.db` · `data/backup/` · `data/*.csv` · `data/*.xlsx` · `data/out/spec.xlsx` · `data/import_plan*.json` · `import_plan*.json` · `.env`
-- 다시 설치한 뒤에는 `hook status` 로 버전을 보고 **다를 때만 `hook install`**. 그다음 **`build` → `verify` 는 버전과 상관없이 늘** 돌린다
-- `hook install` 이 `물어볼 것:` 을 내면(직접 고친 CI 파일 · 지운 CI 파일 · 지운 `.gitignore` 줄) 사용자에게 그대로 보이고 고른 대로 다시 실행한다
-  (`--update ci|gitignore` 새 판으로 · `--keep ci|gitignore` 그대로 · 지운 CI 파일은 `--ci` 다시 만들기 / `--no-ci`). 권장은 새 판. 답은 `DECISIONS.md` 에 `[사용자]` 로
+- 다시 설치한 뒤에는 `hook status` 를 보고 **`결과: 최신` 이 아닐 때만 `hook install`**. 그다음 **`build` → `verify` 는 버전과 상관없이 늘** 돌린다
   (새 버전이 만드는 SQL 이 달라질 수 있어, 다시 만들지 않으면 `verify` 가 "정본과 다릅니다"로 멈춘다).
+- `hook install` 이 `물어볼 것:` 을 내면(종료 3 -- 직접 고친 CI 파일 · 지운 CI 파일 · 지운 `.gitignore` 줄 · UTF-8 이 아닌 `.gitignore`) 사용자에게 그대로 보이고
+  고른 대로 다시 실행한다 (`--update ci|gitignore` 새 판으로 · `--keep ci|gitignore` 그대로 · 지운 CI 파일은 `--ci` 다시 만들기 / `--keep ci` 만들지 않기).
+  권장은 새 판. 답은 `DECISIONS.md` 에 `[사용자]` 로. `hook status` 의 `결과: 물어볼 것 있음` 도 같은 뜻이다 (버전은 같고 고를 것이 남았다).
 - 데이터가 든 표를 일부러 정본 밖에 두려면 정본에 `"outside": ["log"]` -- 그 표는 데이터 보호 검사에서 빠진다.
 - `import apply` 는 SQLite 전용이다. 정본이 PostgreSQL(Supabase) 이면 멈춘다 -- Supabase 에는 Table Editor 의 CSV 가져오기로 넣는다.
 - 개발 관리 사이트는 dev-process-light 의 `light-portal` 이 `dev-notes/outputs/site/` 에 만든다 -- 2 업무 설명 · 4 데이터 쪽은 이 스킬의 생성기를 그대로 쓴다.
