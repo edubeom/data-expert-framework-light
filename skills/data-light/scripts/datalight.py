@@ -1346,7 +1346,7 @@ def _prior_ignore_lines(text: str):
         v = ast.literal_eval(m.group(1)) if m else None
     except (ValueError, SyntaxError):
         v = None
-    return [x for x in v if isinstance(x, str)] if isinstance(v, tuple) else None
+    return [x for x in v if isinstance(x, str)] if isinstance(v, tuple) else ([] if text else None)   # 사본에 없으면 그 판은 넣지 않았다
 
 
 def _fp(text: str) -> str:
@@ -1413,8 +1413,9 @@ def hook_install(repo=".", ci=None, append=False, update=(), keep=()) -> list[st
     wf = repo / ".github" / "workflows" / "data-light.yml"
     st = _settings(repo)
     if prior and "gitignore" not in st:       # 0.8 이하가 설치했다: 그때 넣은 줄 · 만든 CI 파일을 기록으로 (지운 것을 말없이 되살리지 않는다)
-        st["gitignore"] = sorted(set(_prior_ignore_lines(old_copy) or GITIGNORE_LINES) & set(GITIGNORE_LINES))
-    if prior and "ci_fp" not in st and st.get("ci", True):
+        old_lines = _prior_ignore_lines(old_copy)                    # 사본 없이 훅 표시만 있으면 알 수 없다 -- 넣었다고 보고 묻는다
+        st["gitignore"] = sorted(set(GITIGNORE_LINES if old_lines is None else old_lines) & set(GITIGNORE_LINES))
+    if prior and "ci_fp" not in st and st.get("ci", True) and (not old_copy or '\nCI = """' in old_copy):   # 그 판이 CI 파일을 만들었다
         st["ci_fp"] = _PRIOR
     up = lambda k: k in update or "all" in update      # noqa: E731
     kp = lambda k: k in keep or "all" in keep          # noqa: E731

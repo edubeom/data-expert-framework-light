@@ -1405,6 +1405,14 @@ class V09(unittest.TestCase):
             done = dl.hook_install(d, ci=True)
             self.assertFalse(any(x.startswith(dl.ASK) for x in done), done)
             self.assertIn(".env", gi.read_text(encoding="utf-8").splitlines())
+            # .gitignore 줄을 넣지 않던 아주 예전 판(사본에 GITIGNORE_LINES 없음) -- 없는 줄은 새로 더한다
+            self._settings(d, ci_fp=None, gitignore=None)
+            tool.write_text("# data-light 0.2\n__version__ = \"0.2.0\"\n", encoding="utf-8")
+            gi.write_text("node_modules/\n", encoding="utf-8")
+            wf.unlink()                                                                          # 그 판은 CI 파일도 만들지 않았다
+            self.assertFalse(any(x.startswith(dl.ASK) for x in dl.hook_install(d)))
+            self.assertIn("data/app.db", gi.read_text(encoding="utf-8").splitlines())
+            self.assertTrue(wf.exists())
 
     @unittest.skipUnless(shutil.which("git"), "git 없음")
     def test_non_utf8_gitignore_is_asked_not_mixed(self):
