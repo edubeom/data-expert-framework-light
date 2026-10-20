@@ -15,3 +15,5 @@
 - 1.3.1 (0.18.1): 링크 모양 검사(safeHref)가 긴 경로에서 오래 걸리지 않게 (조각/ 의 되풀이)
 - 1.4.0 (0.19): 공개본(`site.hosting: "static"` -- `outputs.py publish` 가 서비스 주소 아래 · GitHub Pages 에 올린 것). http 로 열어도 사이트 서버가 없으니
   실시간 반영 · 로컬 설정(`/__outputs/local`) · 불러 보기를 하지 않고, 머리줄에 '공개본 · 만든 때'. 모든 쪽에 `robots: noindex, nofollow`.
+- 1.4.1 (0.19.1): 공개본 표시를 쪽에도 (`<body data-hosting="static">` -- 자료를 못 읽어도 다시 읽기를 되풀이하지 않는다) ·
+  공개본의 폴더 링크는 `.../index.html` 로 (폴더 주소에서 index.html 을 열지 않는 서버) · 저장이 막힌 브라우저에서 다시 읽기를 되풀이하지 않는다.

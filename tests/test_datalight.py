@@ -1688,5 +1688,99 @@ class V010Review(unittest.TestCase):
             self.assertEqual(dl.publish_dirs(root), ["docs/data-expert-framework-light/"])
 
 
+
+class V0101(unittest.TestCase):
+    """0.10.1 -- 전문판 공개 독립 검토에서 이 판에도 있던 것: 틀 프로그램의 'v.local' · 캐시 · index.html 링크 · 답 원문 · 가지 · 0.10.0 표시."""
+
+    _proj = V010._proj
+    _git = V010._git
+
+    def _build(self, model):
+        return lambda out: dl.build_site(model, out, hosting="static")
+
+    def test_the_shell_program_is_published_unchanged_and_pages_bust_the_cache(self):
+        with tempfile.TemporaryDirectory() as d:
+            root, model = self._proj(d, git=False)
+            dl.set_publish(root, "data-light", "service", by="user", quote="ok", web_dir="public")
+            dl.publish(root, "data-light", self._build(model))
+            pub = root / "public" / "data-expert-framework-light"
+            shell = SKILL / "site" / "shell" / "assets" / "shell.js"
+            self.assertEqual((pub / "assets" / "shell.js").read_bytes(), shell.read_bytes())       # 'v.local' 은 주소가 아니다
+            page = (pub / "data" / "index.html").read_text(encoding="utf-8")
+            self.assertRegex(page, r'src="\.\./data/site\.js\?v=[A-Za-z0-9]+"')
+            self.assertIn('<body data-hosting="static" ', page)
+            files = dl.publish_files(Path(d) / "nosite", "dev-light")
+            self.assertIn("url=../../dev-process-light/progress/index.html", files["data-expert-framework-light/progress/index.html"].decode("utf-8"))
+
+    def test_the_quote_keeps_no_address_port_email_or_secret(self):
+        for q, leak in {"포트 8443 번으로": "8443", "localhost 8080 에서": "8080", "[::1]:8443": "8443", "kim@acme.co.kr 에게": "kim@acme.co.kr",
+                        "ghp_" + "a" * 36: "ghp_", "https://shop.example.com/x": "shop.example.com"}.items():
+            self.assertNotIn(leak, dl.scrub_quote(q), q)
+        self.assertEqual(dl.scrub_quote("10:30 에 정함"), "10:30 에 정함")
+
+    @unittest.skipUnless(shutil.which("git"), "git 없음")
+    def test_only_gh_pages_and_old_marks_carry_on(self):
+        with tempfile.TemporaryDirectory() as d:
+            root, model = self._proj(d)
+            remote = Path(d) / "remote.git"
+            subprocess.run(["git", "init", "-q", "--bare", str(remote)], capture_output=True, check=True)
+            self._git(root, "remote", "add", "origin", str(remote))
+            dl.set_publish(root, "data-light", "pages", by="user", quote="페이지로")
+            f = root / "data" / "outputs-publish.json"
+            conf = json.loads(f.read_text(encoding="utf-8")); conf["branch"] = "main"; f.write_text(json.dumps(conf), encoding="utf-8")
+            r = dl.publish(root, "data-light", self._build(model))
+            self.assertEqual((r["state"], r["branch"]), ("pushed", "gh-pages"))
+            self.assertEqual(self._git(remote, "rev-parse", "--verify", "-q", "refs/heads/main"), "")
+            self.assertIn('href="data-expert-framework-light/index.html"', self._git(remote, "show", "gh-pages:index.html"))
+            other = Path(d) / "other"                                       # 0.10.0 이 올린 모양 (표시에 파일 지문 없음 · 뿌리에 robots.txt)
+            subprocess.run(["git", "clone", "-q", "-b", "gh-pages", str(remote), str(other)], capture_output=True, check=True)
+            self._git(other, "config", "user.email", "o@example.com"); self._git(other, "config", "user.name", "o")
+            (other / ".outputs-publish.json").write_text(json.dumps({"outputs_publish": 1, "files": ["index.html", ".nojekyll", "robots.txt"]}), encoding="utf-8")
+            (other / "robots.txt").write_text("User-agent: *\nDisallow: /\n", encoding="utf-8")
+            (other / "data-expert-framework-light" / ".outputs-publish.json").write_text(json.dumps({"outputs_publish": 1}), encoding="utf-8")
+            self._git(other, "add", "-A"); self._git(other, "commit", "-qm", "0.10.0"); self._git(other, "push", "-q", "origin", "gh-pages")
+            m = dl.load(model); m["project"] = "바뀜"; dl.save(m, model)
+            self.assertEqual(dl.publish(root, "data-light", self._build(model))["state"], "pushed")
+            names = self._git(remote, "ls-tree", "--name-only", "gh-pages").split()
+            self.assertNotIn("robots.txt", names)
+            self.assertIn("index.html", names)
+
+    def test_a_write_that_stopped_twice_still_carries_on(self):
+        with tempfile.TemporaryDirectory() as d:
+            root, model = self._proj(d, git=False)
+            dl.set_publish(root, "data-light", "service", by="user", quote="ok", web_dir="public")
+            dl.publish(root, "data-light", self._build(model))
+            real = dl._write_tree
+            import builtins
+            orig = open
+
+            def stop_at(k):
+                def boom(base, files, tops, meta, dry_run=False):
+                    n = {"c": 0}
+
+                    def flaky(f, mode="r", *a, **kw):
+                        if "w" in mode and str(f).endswith(".js"):
+                            n["c"] += 1
+                            if n["c"] == k:
+                                raise OSError("being used by another process")
+                        return orig(f, mode, *a, **kw)
+                    builtins.open = flaky
+                    try:
+                        return real(base, files, tops, meta, dry_run)
+                    finally:
+                        builtins.open = orig
+                return boom
+            for i, k in enumerate((5, 2)):                                   # 두 번 멈춘다 -- 처음 것과 두 번째 것이 섞인 폴더
+                m = dl.load(model); m["project"] = f"바뀜 {i}"; dl.save(m, model)
+                dl._write_tree = stop_at(k)
+                try:
+                    with self.assertRaises(OSError):
+                        dl.publish(root, "data-light", self._build(model))
+                finally:
+                    dl._write_tree = real
+            m = dl.load(model); m["project"] = "마지막"; dl.save(m, model)
+            self.assertEqual(dl.publish(root, "data-light", self._build(model))["state"], "written")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

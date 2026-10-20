@@ -49,7 +49,7 @@ import sys
 from pathlib import Path
 
 FORMAT = "data-light/1"
-__version__ = "0.10.0"
+__version__ = "0.10.1"
 NAME = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 TYPES = ("id", "ref", "text", "long_text", "int", "number", "money", "bool", "date", "datetime", "owner")
 ACCESS = ("members", "own", "read")
@@ -2352,15 +2352,33 @@ PUBLISH_MARK = ".outputs-publish.json"
 PAGES_BRANCH = "gh-pages"
 PAGES_REF = "refs/dev-outputs/pages"
 PORTAL_CMD = "python .claude/skills/light-portal/portal_tool.py publish"
-_ADDR_RX = re.compile(r"(?:https?://\S+|\b[\w.-]+:\d{2,5}\b)")
+# 사용자 답 원문에서 지우는 것 -- 주소 · 호스트:포트(호스트는 글자로 시작 · IP · [IPv6]) · 이 컴퓨터 · 포트 번호 글 · 이메일 · 비밀값 (시각 10:30 은 그대로)
+_Q_URL = re.compile(r"(?i)\b(?:https?|ftp|wss?)://\S+")
+_Q_HOSTPORT = re.compile(r"(?:\[[0-9A-Fa-f:]+\]|\b\d{1,3}(?:\.\d{1,3}){3}|\b[A-Za-z][\w-]*(?:\.[\w-]+)*):\d{2,5}\b")
+_Q_LOCAL = re.compile(r"(?i)\b(?:localhost|127\.0\.0\.1|0\.0\.0\.0)\b(?:\s*:?\s*\d{2,5}\b)?")
+_Q_PORT = re.compile(r"(?i)(?:포트\s*(?:번호\s*)?[:=]?\s*\d{2,5}(?:\s*번)?|\bport\s*[:=]?\s*\d{2,5}\b|\b\d{2,5}\s*번\s*포트)")
+_Q_EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}")
+_Q_SECRET = [re.compile(x) for x in (r"ghp_[A-Za-z0-9]{30,}", r"github_pat_[A-Za-z0-9_]{30,}", r"sk-[A-Za-z0-9_-]{20,}", r"AKIA[0-9A-Z]{16}",
+                                     r"-----BEGIN [A-Z ]*PRIVATE KEY-----", r"xox[baprs]-[A-Za-z0-9-]{10,}")]   # 전문판 outputs_schema leaks.secret_patterns
 # 공개본에 남기지 않는 내 네트워크 주소 -- 사설 IPv4 (10 · 172.16~31 · 192.168 · 169.254) · 이 컴퓨터 · .local/.lan/.internal/.home.arpa 이름 (포트가 붙어도)
 _PRIVATE_RX = re.compile(rb"(?<![\w.])(?:(?:10|127)(?:\.\d{1,3}){3}|192\.168(?:\.\d{1,3}){2}|169\.254(?:\.\d{1,3}){2}|172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2}"
                          rb"|[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.(?:local|lan|internal|home\.arpa)|localhost)(?::\d{1,5})?(?![\w.])")
-_TEXT_EXT = (".html", ".js", ".json", ".css", ".txt", ".md", ".svg")
 
 
 class PublishError(ValueError):
     pass
+
+
+def scrub_quote(q: str) -> str:
+    """사용자 답 원문을 커밋하는 설정에 남기기 전에 -- 주소 · 포트 · 이메일 · 비밀값을 자리표시로."""
+    t = q.strip()
+    for rx in _Q_SECRET:
+        t = rx.sub("<비밀값>", t)
+    t = _Q_URL.sub("<주소>", t)
+    t = _Q_HOSTPORT.sub("<주소>", t)
+    t = _Q_LOCAL.sub("<주소>", t)
+    t = _Q_PORT.sub("포트 <번호>", t)
+    return _Q_EMAIL.sub("<이메일>", t)
 
 
 def owner_light(root) -> str | None:
@@ -2531,7 +2549,7 @@ def set_publish(root, framework: str, mode: str, *, by, quote, web_dir=None, rem
         raise PublishError("공개는 사용자가 정합니다 -- --by user --quote \"<사용자 답 원문>\"")
     if not (quote or "").strip():
         raise PublishError("--quote 에 사용자 답 원문을 줍니다")
-    d: dict = {"outputs_publish": 1, "framework": framework, "mode": mode, "by": "user", "quote": _ADDR_RX.sub("<주소>", quote.strip()),
+    d: dict = {"outputs_publish": 1, "framework": framework, "mode": mode, "by": "user", "quote": scrub_quote(quote),
                "at": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
     warnings = []
     if mode == "service":
@@ -2565,7 +2583,37 @@ def _pointer_html(href: str, inc: str, main: str) -> str:
             f"<p>{a} 의 쪽은 <a href=\"{h}\">{b} 개발 관리 사이트</a>에 함께 있습니다 (같은 쪽을 두 번 만들지 않습니다).</p>\n</body>\n</html>\n")
 
 
-def publish_files(site: Path, framework: str) -> dict:
+_ASSET_REF = re.compile(r'((?:src|href)=")((?:\.\./)*(?:data|assets)/[^"?#]+\.(?:js|css))(")')
+
+
+def _scrub_ok(rel: str, b: bytes) -> bool:
+    """내 네트워크 주소를 지울 파일인가 -- 사이트 자료(.json · window.OUTPUTS 자료 .js)와 틀로 만든 쪽 HTML 만.
+    화면 틀 프로그램(assets/*)은 건드리지 않는다 (v.local 같은 코드가 주소처럼 보여 프로그램이 깨진다)."""
+    r = rel.lower()
+    if r.endswith((".json", ".md", ".txt")):
+        return True
+    if r.endswith(".js"):
+        return b.startswith(b"window.OUTPUTS=")
+    if r.endswith(".html"):
+        return b'data-base="' in b
+    return False
+
+
+def _published_bytes(rel: str, b: bytes, ver: str) -> bytes:
+    """공개본으로 바꾼다 -- 내 네트워크 주소를 지우고, 쪽 HTML 은 공개본 표시(data-hosting)와 캐시를 피하는 꼬리표(?v=빌드)를 단다
+    (GitHub Pages 는 10분 캐시 -- 예전 site.js 와 새 쪽이 섞이면 표시가 맞지 않는다)."""
+    if _scrub_ok(rel, b):
+        b = _PRIVATE_RX.sub("<내부 주소>".encode("utf-8"), b)
+    if rel.lower().endswith(".html") and b'data-base="' in b:
+        t = b.decode("utf-8")
+        if ver:
+            t = _ASSET_REF.sub(lambda m: f"{m.group(1)}{m.group(2)}?v={ver}{m.group(3)}", t)
+        t = t.replace("<body ", '<body data-hosting="static" ', 1)
+        b = t.encode("utf-8")
+    return b
+
+
+def publish_files(site: Path, framework: str, ver: str = "") -> dict:
     """공개 묶음 {경로: 바이트} -- <판 이름>/ 에 사이트(manifest 의 파일만), 품은 판의 폴더에는 같은 주소로 가는 안내 쪽만.
     글 파일의 내 네트워크 주소(사설 IP · 이 컴퓨터 · .local 이름)는 <내부 주소> 로 지운다."""
     site = Path(site)
@@ -2577,15 +2625,12 @@ def publish_files(site: Path, framework: str) -> dict:
     out = {}
     for rel in man.get("files") or []:
         if _site_rel_ok(rel) and (site / rel).is_file() and not (site / rel).is_symlink():
-            b = (site / rel).read_bytes()
-            if rel.lower().endswith(_TEXT_EXT):
-                b = _PRIVATE_RX.sub("<내부 주소>".encode("utf-8"), b)
-            out[f"{name}/{rel}"] = b
+            out[f"{name}/{rel}"] = _published_bytes(rel, (site / rel).read_bytes(), ver)
     for inc in PUBLISH_INCLUDES.get(framework, []):
         iname, home = SITE_LABELS[inc], PUBLISH_HOME.get(inc, "")
         for _pid, _no, _label, path in SITE_PAGES:
             up = "../" * (path.count("/") + 1)
-            out[f"{iname}/{path}index.html"] = _pointer_html(f"{up}{name}/{path or home}", inc, framework).encode("utf-8")
+            out[f"{iname}/{path}index.html"] = _pointer_html(f"{up}{name}/{path or home}index.html", inc, framework).encode("utf-8")
     return out
 
 
@@ -2647,9 +2692,16 @@ def _write_tree(base: Path, files: dict, tops: list, meta: dict, dry_run: bool =
     changed = [(t, i, f, d) for t, i, f, d in plan if cur(f) != _nsha(d)]
     if dry_run:
         return {"changed": len(changed), "removed": len(gone), "files": len(plan), "dry_run": True}
+    def kept(t):                                             # 지금 폴더에 있는 그대로의 지문 (받아들이는 것 중) -- 쓰다 멈춘 파일도 다음에 알아보게
+        out = {}
+        for i, shas in marks[t].items():
+            f = base / t / i
+            c = cur(f) if _site_rel_ok(i) and _within(f, base / t) and f.is_file() and not f.is_symlink() else None
+            if c in shas:
+                out[i] = c
+        return out
     for t in tops:                                           # 쓰기 전에: 새 지문도 받아들이게 (쓰다 멈추면 다음에 이어서)
-        old = {i: sorted(s)[0] for i, s in marks[t].items() if s}
-        _write_mark(base / t, meta, old, {i: _nsha(d) for tt, i, _f, d in plan if tt == t})
+        _write_mark(base / t, meta, kept(t), {i: _nsha(d) for tt, i, _f, d in plan if tt == t})
     for f in gone:
         f.unlink()
     for _t, _i, f, data in changed:
@@ -2713,7 +2765,10 @@ def _pages_commit(root: Path, files: dict, tops: list, *, remote: str, branch: s
         tm = mark_of(f"{t}/{PUBLISH_MARK}")
         if inside and not tm.get("outputs_publish"):
             raise PublishError(f"gh-pages 의 {t}/ 는 이 도구가 올린 폴더가 아닙니다 -- 덮지 않습니다")
-        blobs = tm.get("blobs") if isinstance(tm.get("blobs"), dict) else {}
+        if "blobs" in tm:
+            blobs = tm["blobs"] if isinstance(tm["blobs"], dict) else {}
+        else:                                                # 0.10.0 의 표시(파일 지문 없음) -- 그때 이 도구가 올린 그대로로 본다
+            blobs = {p[len(t) + 1:]: have[p] for p in inside}
         foreign = [p for p in inside if p != f"{t}/{PUBLISH_MARK}" and blobs.get(p[len(t) + 1:]) != have[p]]
         if foreign:
             raise PublishError(f"gh-pages 의 {t}/ 에 이 도구가 올리지 않은(또는 고친) 파일이 있습니다 -- 덮거나 지우지 않습니다: " + ", ".join(foreign[:5]))
@@ -2728,12 +2783,15 @@ def _pages_commit(root: Path, files: dict, tops: list, *, remote: str, branch: s
         mk = (json.dumps({"outputs_publish": 1, "folder": t, "blobs": mine, **({"stable": stable} if t == tops[0] else {})}, ensure_ascii=False) + "\n").encode("utf-8")
         rows_blob[f"{t}/{PUBLISH_MARK}"] = _blob(root, mk)
     if own_root:
-        items = "\n".join(f"<li><a href=\"{html.escape(t, quote=True)}/\">{html.escape(t)}</a></li>" for t in tops)
+        items = "\n".join(f"<li><a href=\"{html.escape(t, quote=True)}/index.html\">{html.escape(t)}</a></li>" for t in tops)
         title = html.escape(str(project or "개발 관리 사이트"))
         rf = {"index.html": ("<!doctype html>\n<html lang=\"ko\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"robots\" content=\"noindex, nofollow\">\n"
                              f"<title>{title}</title>\n</head>\n<body>\n<h1>{title}</h1>\n<p>개발 관리 사이트 (공개본)</p>\n<ul>\n{items}\n</ul>\n</body>\n</html>\n").encode("utf-8"),
               ".nojekyll": b""}
-        known = root_mark.get("blobs") if isinstance(root_mark.get("blobs"), dict) else {}
+        if isinstance(root_mark.get("blobs"), dict):
+            known = root_mark["blobs"]
+        else:                                                # 0.10.0 의 표시 (이 도구가 둔 뿌리 파일의 이름만)
+            known = {k: have[k] for k in (root_mark.get("files") or []) if isinstance(k, str) and k in have}
         mine = {}
         for k, v in rf.items():
             if k in have and known.get(k) != have[k]:
@@ -2797,11 +2855,11 @@ def publish(root, framework: str, build, *, push: bool = True) -> dict:
         r = build(site)
         if r.get("errors"):
             raise PublishError("사이트를 만들다 문제가 생겨 공개하지 않습니다: " + "; ".join(r["errors"][:3]))
-        files = publish_files(site, framework)
         try:
             sj = json.loads((site / "data" / "site.json").read_text(encoding="utf-8"))
         except (OSError, ValueError):
             sj = {}
+        files = publish_files(site, framework, ver=re.sub(r"[^A-Za-z0-9]", "", str(sj.get("mark") or ""))[:24])
         stable = stable_digest(files, [sj.get("generated_at"), sj.get("mark")])
         meta = {"framework": framework, "framework_version": sj.get("framework_version"), "generated_at": sj.get("generated_at"), "stable": stable}
         name = SITE_LABELS[framework]
@@ -2813,7 +2871,9 @@ def publish(root, framework: str, build, *, push: bool = True) -> dict:
             st = "ready" if not push else ("written" if (w["changed"] or w["removed"]) else "same")
             return {"state": st, "mode": "service", "dir": "." if base == rr else base.relative_to(rr).as_posix(), "path": f"/{name}/",
                     "folders": tops, "ignored": ign, **w}
-        remote, branch = str(conf.get("remote") or "origin"), str(conf.get("branch") or PAGES_BRANCH)
+        remote, branch = str(conf.get("remote") or "origin"), PAGES_BRANCH          # 설정 파일의 다른 가지(main 등)로는 올리지 않는다
+        if not re.match(r"^[A-Za-z0-9._-]+$", remote):
+            raise PublishError("공개 설정의 remote 가 원격 이름이 아닙니다 -- publish --set pages 로 다시 정합니다")
         url = _gs(_git_run(root, "remote", "get-url", remote))
         if not url:
             raise PublishError(f"git 원격 '{remote}' 이 없습니다")
@@ -2838,8 +2898,9 @@ def publish_lines(res: dict, framework: str, cmd: str = "datalight.py publish") 
     if res.get("mode") == "service":
         verb = {"written": "썼습니다", "same": "그대로 두었습니다 (바뀐 것 없음)", "ready": "쓸 준비만 했습니다 (--dry-run -- 쓰지 않음)"}.get(st, st)
         out = [f"공개본을 {res['dir']}/{name}/ 에 {verb} -- 파일 {res['files']} · 바뀜 {res['changed']} · 지움 {res['removed']}" + (f" · {inc}" if inc else "")]
-        if st == "written":
-            out.append(f"  사이트를 올리면(배포) <서비스 주소>/{name}/ 에서 보입니다 ({res['dir']} 를 주소 뿌리로 내보낼 때) -- 이 폴더도 저장(커밋)합니다")
+        if st in ("written", "same"):
+            out.append(f"  사이트를 올리면(배포) <서비스 주소>/{name}/ 에서 보입니다 ({res['dir']} 를 주소 뿌리로 내보낼 때 -- 폴더 주소에서 index.html 을 "
+                       f"열지 않는 서버면 <서비스 주소>/{name}/index.html)" + (" -- 이 폴더도 저장(커밋)합니다" if st == "written" else ""))
         if res.get("ignored"):
             out.append("  [알림] 이 폴더는 git 이 무시합니다 -- 저장소에서 가져가는 배포면 보이지 않습니다")
         return out

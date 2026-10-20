@@ -10,7 +10,7 @@
   var B = document.body;
   var BASE = B.getAttribute("data-base") || "";
   var FILE = location.protocol === "file:";
-  var STATIC = !FILE && !!SITE && SITE.hosting === "static";          // 공개본 -- 사이트 서버(/__outputs/*)가 없다
+  var STATIC = !FILE && (B.getAttribute("data-hosting") === "static" || (!!SITE && SITE.hosting === "static"));   // 공개본 -- 사이트 서버(/__outputs/*)가 없다 (쪽에도 표시: 자료를 못 읽어도 안다)
   var MARK = SITE ? SITE.mark : null;
   var STATES = {
     user: "사용자 확인", ai_draft: "AI 초안 · 확인 전", proxy: "대리 확인 · 사용자 확인 필요",
@@ -61,7 +61,7 @@
     if (p.charAt(0) === "#") return p;
     var hash = "", i = p.indexOf("#");
     if (i >= 0) { hash = p.slice(i); p = p.slice(0, i); }
-    if (FILE && (p === "" || p.charAt(p.length - 1) === "/")) p += "index.html";   // 파일로 열면 폴더 주소가 index.html 을 열지 않는다
+    if ((FILE || STATIC) && (p === "" || p.charAt(p.length - 1) === "/")) p += "index.html";   // 파일 · 공개본: 폴더 주소가 index.html 을 열지 않는 곳이 있다
     return BASE + p + hash;
   }
   function link(p, kids, cls) {
@@ -818,10 +818,15 @@
 
   function render() {
     if (!SITE || !PAGE) {
-      add(B, el("p", { "class": "o-text bad", text: "사이트 자료(data/site.js · 쪽 자료)를 읽지 못했습니다 -- outputs build 로 다시 만듭니다." }));
-      if (!FILE) {                                          // 서버로 연 경우 -- 다시 만드는 중이었을 수 있다: 잠시 뒤 다시 읽는다 (몇 번만)
+      add(B, el("p", { "class": "o-text bad", text: STATIC
+        ? "공개본의 자료(data/site.js · 쪽 자료)를 읽지 못했습니다 -- 방금 다시 올렸으면 잠시 뒤 새로 고칩니다."
+        : "사이트 자료(data/site.js · 쪽 자료)를 읽지 못했습니다 -- outputs build 로 다시 만듭니다." }));
+      if (!FILE && !STATIC) {                               // 사이트 서버로 연 경우 -- 다시 만드는 중이었을 수 있다: 잠시 뒤 다시 읽는다 (몇 번만)
         var n = Number(store("outputs.retry") || 0);
-        if (n < 5) { store("outputs.retry", String(n + 1)); setTimeout(function () { location.reload(); }, 1500); }
+        store("outputs.retry", String(n + 1));
+        if (n < 5 && Number(store("outputs.retry") || 0) === n + 1) {   // 저장이 막힌 브라우저에서는 다시 읽지 않는다 (끝없이 돌지 않게)
+          setTimeout(function () { location.reload(); }, 1500);
+        }
       }
       return;
     }
