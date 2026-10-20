@@ -2353,6 +2353,10 @@ PAGES_BRANCH = "gh-pages"
 PAGES_REF = "refs/dev-outputs/pages"
 PORTAL_CMD = "python .claude/skills/light-portal/portal_tool.py publish"
 _ADDR_RX = re.compile(r"(?:https?://\S+|\b[\w.-]+:\d{2,5}\b)")
+# 공개본에 남기지 않는 내 네트워크 주소 -- 사설 IPv4 (10 · 172.16~31 · 192.168 · 169.254) · 이 컴퓨터 · .local/.lan/.internal/.home.arpa 이름 (포트가 붙어도)
+_PRIVATE_RX = re.compile(rb"(?<![\w.])(?:(?:10|127)(?:\.\d{1,3}){3}|192\.168(?:\.\d{1,3}){2}|169\.254(?:\.\d{1,3}){2}|172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2}"
+                         rb"|[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.(?:local|lan|internal|home\.arpa)|localhost)(?::\d{1,5})?(?![\w.])")
+_TEXT_EXT = (".html", ".js", ".json", ".css", ".txt", ".md", ".svg")
 
 
 class PublishError(ValueError):
@@ -2378,11 +2382,29 @@ def _tops(framework: str) -> list:
 
 
 def _within(p: Path, base: Path) -> bool:
+    """p 가 base 안에 있나 -- 둘 다 실제 경로로 (심링크 · Windows 정션을 따라간 뒤)."""
     try:
-        Path(p).resolve().relative_to(Path(base).resolve())
+        Path(os.path.realpath(p)).relative_to(Path(os.path.realpath(base)))
         return True
     except (ValueError, OSError):
         return False
+
+
+def publish_dirs(root) -> list:
+    """서비스 폴더에 쓰는 공개본의 자리 (프로젝트 기준, 끝에 /) -- 표시(.outputs-publish.json)가 있는 폴더. 사이트의 '저장 목록 · 바뀐 파일'에서 뺀다
+    (공개본을 저장할 때마다 다음 공개본이 또 바뀌지 않게)."""
+    root = Path(root)
+    out = []
+    for fw, rel in PUBLISH_CONFIG.items():
+        try:
+            d = json.loads((root / rel).read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, ValueError):
+            continue
+        if isinstance(d, dict) and d.get("mode") == "service" and isinstance(d.get("web_dir"), str):
+            base = d["web_dir"].strip("/")
+            pre = "" if base in ("", ".") else base + "/"
+            out += [f"{pre}{t}/" for t in _tops(fw)]
+    return list(dict.fromkeys(out))
 
 
 def load_publish(root, framework: str) -> dict:
@@ -2403,10 +2425,10 @@ def _web_dir(root: Path, web_dir) -> Path:
         raise PublishError("--web-dir 가 필요합니다 -- 사이트가 주소 뿌리(/)로 그대로 내보내는 폴더, 프로젝트 기준 (예: public · docs · .)")
     if Path(web_dir).is_absolute() or re.match(r"^[A-Za-z]:", web_dir) or web_dir.startswith(("\\\\", "//")):
         raise PublishError("--web-dir 는 프로젝트 기준의 상대 경로로 줍니다")
-    d = (root / web_dir).resolve()
+    d = Path(os.path.realpath(root / web_dir))
     if not _within(d, root):
-        raise PublishError("--web-dir 가 프로젝트 밖입니다")
-    if ".git" in d.relative_to(root).parts:
+        raise PublishError("--web-dir 가 프로젝트 밖입니다 (링크를 따라가면 밖)")
+    if ".git" in d.relative_to(Path(os.path.realpath(root))).parts:
         raise PublishError("--web-dir 가 .git 안입니다")
     for area in ("data/outputs", "dev-notes/outputs"):
         if _within(d, root / area):
@@ -2414,10 +2436,17 @@ def _web_dir(root: Path, web_dir) -> Path:
     return d
 
 
+def _nsha(b: bytes) -> str:
+    """내용 지문 -- 줄 끝(CRLF/LF)은 같게 본다 (Windows 의 git 이 받으면서 바꾼다)."""
+    import hashlib
+    return hashlib.sha256(b.replace(b"\r\n", b"\n")).hexdigest()
+
+
 def _owned(folder: Path) -> dict:
-    """공개 폴더의 표시 -- 이 도구가 쓴 폴더면 {파일: 지문}, 새 폴더면 {}. 남의 폴더면 PublishError (덮지 않는다)."""
-    if folder.is_symlink():
-        raise PublishError(f"{folder} 가 링크입니다 -- 공개하지 않습니다")
+    """공개 폴더의 표시 -- 이 도구가 쓴 폴더면 {파일: 받아들이는 지문들}, 새 폴더면 {}. 남의 폴더면 PublishError (덮지 않는다).
+    표시에는 지난번 것(hashes)과 쓰다 멈춘 것(pending)이 함께 있다 -- 한 번 실패해도 다음에 이어서 쓴다."""
+    if folder.is_symlink() or (folder.exists() and Path(os.path.realpath(folder)) != Path(os.path.realpath(folder.parent)) / folder.name):
+        raise PublishError(f"{folder} 가 링크(또는 정션)입니다 -- 공개하지 않습니다")
     if not folder.exists():
         return {}
     if not folder.is_dir():
@@ -2428,8 +2457,13 @@ def _owned(folder: Path) -> dict:
             d = json.loads(mark.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, ValueError):
             raise PublishError(f"{mark} 가 깨졌습니다 -- 폴더를 비우고 다시 공개합니다")
-        h = d.get("hashes") if isinstance(d, dict) else None
-        return {k: v for k, v in h.items() if isinstance(k, str) and isinstance(v, str)} if isinstance(h, dict) else {}
+        out: dict = {}
+        for key in ("hashes", "pending"):
+            h = d.get(key) if isinstance(d, dict) else None
+            for k, v in (h.items() if isinstance(h, dict) else []):
+                if isinstance(k, str) and isinstance(v, str) and _site_rel_ok(k):
+                    out.setdefault(k, set()).add(v)
+        return out
     if any(folder.iterdir()):
         raise PublishError(f"{folder} 는 이 도구가 공개한 폴더가 아닙니다 ({PUBLISH_MARK} 없음) -- 남의 파일을 덮지 않습니다. "
                            "다른 --web-dir 를 주거나 GitHub Pages(--set pages)로 공개합니다")
@@ -2439,7 +2473,7 @@ def _owned(folder: Path) -> dict:
 def _git_run(root: Path, *args, data: bytes | None = None, env: dict | None = None, hooks: bool = False, timeout: int = 180):
     import subprocess
     safe = [] if hooks else ["-c", "core.fsmonitor=false", "-c", f"core.hooksPath={os.devnull}", "-c", "core.pager=cat"]
-    e = {**os.environ, "GIT_TERMINAL_PROMPT": "0", **(env or {})}
+    e = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C", "LANGUAGE": "C", **(env or {})}   # 알림 글을 영어로 (읽어서 판단하는 곳이 있다)
     try:
         return subprocess.run(["git", *safe, "-C", str(root), *args], input=data, capture_output=True, env=e, timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -2459,6 +2493,25 @@ def _ge(r) -> str:
 def _github(url: str):
     m = re.match(r"^(?:https?://(?:[^@/]+@)?github\.com/|git@github\.com:|ssh://git@github\.com/)([^/]+)/([^/]+?)(?:\.git)?/?$", url or "")
     return (m.group(1), m.group(2)) if m else None
+
+
+def _pages_source(url: str):
+    """GitHub 저장소의 Pages 가 지금 무엇을 보여 주나 -- ('branch', 가지, 폴더) · ('workflow', None, None) · None(꺼짐 · 비공개 · 모름). 토큰 없이."""
+    import urllib.error
+    import urllib.request
+    gh = _github(url)
+    if not gh:
+        return None
+    try:
+        req = urllib.request.Request(f"https://api.github.com/repos/{gh[0]}/{gh[1]}/pages", headers={"User-Agent": "datalight", "Accept": "application/vnd.github+json"})
+        with urllib.request.urlopen(req, timeout=8) as r:  # noqa: S310 -- 정해진 주소
+            d = json.loads(r.read(200_000).decode("utf-8", "replace"))
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+    if d.get("build_type") == "workflow":
+        return ("workflow", None, None)
+    src = d.get("source") or {}
+    return ("branch", src.get("branch"), src.get("path")) if src.get("branch") else None
 
 
 def pages_url(remote_url: str, framework: str):
@@ -2485,11 +2538,16 @@ def set_publish(root, framework: str, mode: str, *, by, quote, web_dir=None, rem
         wd = _web_dir(root, web_dir)
         for t in _tops(framework):
             _owned(wd / t)
-        d["web_dir"] = "." if wd == root else wd.relative_to(root).as_posix()
+        d["web_dir"] = "." if wd == Path(os.path.realpath(root)) else wd.relative_to(Path(os.path.realpath(root))).as_posix()
     if mode == "pages":
         url = _gs(_git_run(root, "remote", "get-url", remote))
         if not url:
             raise PublishError(f"git 원격 '{remote}' 이 없습니다 -- GitHub 저장소를 원격으로 둔 뒤에 (git remote add {remote} <주소>)")
+        src = _pages_source(url)
+        if src and not (src[0] == "branch" and src[1] == PAGES_BRANCH and (src[2] or "/") == "/"):
+            where = "GitHub Actions" if src[0] == "workflow" else f"{src[1]} 가지의 {src[2] or '/'}"
+            raise PublishError(f"이 저장소의 GitHub Pages 는 이미 {where} 를 보여 줍니다 -- gh-pages 로 바꾸면 지금 사이트가 내려갑니다. "
+                               "그 사이트 아래에 두려면 --set service --web-dir <그 폴더> 로 합니다")
         d.update({"remote": remote, "branch": PAGES_BRANCH})
         if not _github(url):
             warnings.append("원격이 GitHub 이 아닙니다 -- gh-pages 가지에는 올리지만 사이트로 보여 주는지는 그 서비스에 달렸습니다")
@@ -2508,7 +2566,8 @@ def _pointer_html(href: str, inc: str, main: str) -> str:
 
 
 def publish_files(site: Path, framework: str) -> dict:
-    """공개 묶음 {경로: 바이트} -- <판 이름>/ 에 사이트(manifest 의 파일만), 품은 판의 폴더에는 같은 주소로 가는 안내 쪽만."""
+    """공개 묶음 {경로: 바이트} -- <판 이름>/ 에 사이트(manifest 의 파일만), 품은 판의 폴더에는 같은 주소로 가는 안내 쪽만.
+    글 파일의 내 네트워크 주소(사설 IP · 이 컴퓨터 · .local 이름)는 <내부 주소> 로 지운다."""
     site = Path(site)
     name = SITE_LABELS[framework]
     try:
@@ -2518,7 +2577,10 @@ def publish_files(site: Path, framework: str) -> dict:
     out = {}
     for rel in man.get("files") or []:
         if _site_rel_ok(rel) and (site / rel).is_file() and not (site / rel).is_symlink():
-            out[f"{name}/{rel}"] = (site / rel).read_bytes()
+            b = (site / rel).read_bytes()
+            if rel.lower().endswith(_TEXT_EXT):
+                b = _PRIVATE_RX.sub("<내부 주소>".encode("utf-8"), b)
+            out[f"{name}/{rel}"] = b
     for inc in PUBLISH_INCLUDES.get(framework, []):
         iname, home = SITE_LABELS[inc], PUBLISH_HOME.get(inc, "")
         for _pid, _no, _label, path in SITE_PAGES:
@@ -2533,131 +2595,164 @@ def stable_digest(files: dict, volatile: list) -> str:
     vol = [v.encode("utf-8") for v in volatile if isinstance(v, str) and len(v) >= 8]
     h = hashlib.sha256()
     for rel in sorted(files):
-        b = files[rel]
+        b = files[rel].replace(b"\r\n", b"\n")
         for v in vol:
             b = b.replace(v, b"<v>")
         h.update(rel.encode("utf-8") + b"\0" + hashlib.sha256(b).digest())
     return h.hexdigest()[:24]
 
 
-def _sha(b: bytes) -> str:
-    import hashlib
-    return hashlib.sha256(b).hexdigest()
+def _write_mark(folder: Path, meta: dict, hashes: dict, pending: dict | None = None) -> None:
+    folder.mkdir(parents=True, exist_ok=True)
+    body = {"outputs_publish": 1, **meta, "hashes": hashes}
+    if pending:
+        body["pending"] = pending
+    _write(folder / PUBLISH_MARK, json.dumps(body, ensure_ascii=False, indent=1) + "\n")
 
 
-def _write_tree(base: Path, files: dict, tops: list, meta: dict) -> dict:
+def _write_tree(base: Path, files: dict, tops: list, meta: dict, dry_run: bool = False) -> dict:
+    """사이트가 내보내는 폴더 아래 판 이름 폴더들에 쓴다 -- 폴더마다 표시의 지문 그대로인(이 도구가 쓴) 파일만 덮고 지운다.
+    쓰기 전에 새 지문을 표시에 함께 적어 둔다(pending) -- 쓰다 멈춰도 다음 공개가 이어서 쓴다."""
     marks = {t: _owned(base / t) for t in tops}
 
     def cur(f: Path):
         try:
-            return _sha(f.read_bytes())
+            return _nsha(f.read_bytes())
         except OSError:
             return None
     plan = []
     for rel, data in sorted(files.items()):
         top, _, inner = rel.partition("/")
-        f = base / rel
-        if any(x.is_symlink() for x in [f, *f.parents] if _within(x, base) and x != base):
-            raise PublishError(f"{rel} 이 링크를 거칩니다 -- 공개하지 않습니다")
-        if f.exists() and (not f.is_file() or marks[top].get(inner) != cur(f)):
+        f = base / top / inner
+        if not _site_rel_ok(inner) or not _within(f, base / top) or (f.exists() and f.is_symlink()):
+            raise PublishError(f"{rel} 이 링크(또는 정션)를 거칩니다 -- 공개하지 않습니다")
+        if f.exists() and (not f.is_file() or (cur(f) not in marks[top].get(inner, set()) and cur(f) != _nsha(data))):
             raise PublishError(f"{base.name}/{rel} 은 이 도구가 공개한 그대로가 아닙니다 (누가 고쳤거나 다른 파일) -- 덮지 않습니다")
         plan.append((top, inner, f, data))
+    want = {(t, i) for t, i, _f, _d in plan}
     old_meta = {}
     try:
         old_meta = json.loads((base / tops[0] / PUBLISH_MARK).read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, ValueError):
         pass
-    want = {(t, i) for t, i, _f, _d in plan}
-    if meta.get("stable") and isinstance(old_meta, dict) and old_meta.get("stable") == meta["stable"] and \
+    if meta.get("stable") and isinstance(old_meta, dict) and old_meta.get("stable") == meta["stable"] and not old_meta.get("pending") and \
             want == {(t, i) for t, h in marks.items() for i in h} and all((base / t / i).is_file() for t, i in want):
         return {"changed": 0, "removed": 0, "files": len(plan)}
-    removed = 0
+    gone = []
     for t, h in marks.items():
-        for inner, hh in h.items():
+        for inner, shas in h.items():
             f = base / t / inner
-            if (t, inner) not in want and _site_rel_ok(inner) and f.is_file() and not f.is_symlink() and cur(f) == hh:
-                f.unlink()
-                removed += 1
-    changed, new_marks = 0, {t: {} for t in tops}
-    for t, inner, f, data in plan:
-        if cur(f) != _sha(data):
-            f.parent.mkdir(parents=True, exist_ok=True)
-            with open(f, "wb") as fh:
-                fh.write(data)
-            changed += 1
-        new_marks[t][inner] = _sha(data)
+            if (t, inner) not in want and _within(f, base / t) and f.is_file() and not f.is_symlink() and cur(f) in shas:
+                gone.append(f)
+    changed = [(t, i, f, d) for t, i, f, d in plan if cur(f) != _nsha(d)]
+    if dry_run:
+        return {"changed": len(changed), "removed": len(gone), "files": len(plan), "dry_run": True}
+    for t in tops:                                           # 쓰기 전에: 새 지문도 받아들이게 (쓰다 멈추면 다음에 이어서)
+        old = {i: sorted(s)[0] for i, s in marks[t].items() if s}
+        _write_mark(base / t, meta, old, {i: _nsha(d) for tt, i, _f, d in plan if tt == t})
+    for f in gone:
+        f.unlink()
+    for _t, _i, f, data in changed:
+        f.parent.mkdir(parents=True, exist_ok=True)
+        with open(f, "wb") as fh:
+            fh.write(data)
     for t in tops:
         d = base / t
         for sub in sorted((x for x in d.rglob("*") if x.is_dir() and not x.is_symlink()), key=lambda x: len(x.parts), reverse=True):
             try:
-                sub.rmdir()
+                sub.rmdir()                                      # 지운 뒤 빈 폴더만
             except OSError:
                 pass
-        _write(d / PUBLISH_MARK, json.dumps({"outputs_publish": 1, **meta, "hashes": new_marks[t]}, ensure_ascii=False, indent=1) + "\n")
-    return {"changed": changed, "removed": removed, "files": len(plan)}
+        _write_mark(d, meta, {i: _nsha(dd) for tt, i, _f, dd in plan if tt == t})
+    return {"changed": len(changed), "removed": len(gone), "files": len(plan)}
+
+
+def _blob(root: Path, data: bytes):
+    h = _git_run(root, "hash-object", "-w", "--stdin", data=data)
+    if h.returncode != 0:
+        raise PublishError(f"파일을 저장소에 넣지 못했습니다: {_ge(h)}")
+    return _gs(h)
 
 
 def _pages_commit(root: Path, files: dict, tops: list, *, remote: str, branch: str, project, msg: str, push: bool, stable: str) -> dict:
-    """gh-pages 가지에 공개본을 올립니다 -- 작업 폴더 · HEAD · 색인을 건드리지 않고(임시 색인), 그 가지의 다른 파일은 둡니다."""
+    """gh-pages 가지에 공개본을 올립니다 -- 작업 폴더 · HEAD · 색인을 건드리지 않고(임시 색인), 그 가지의 다른 파일은 둡니다.
+    판 이름 폴더 안 · 뿌리의 index.html · .nojekyll 은 이 도구가 올린 그대로(표시의 blob 지문)일 때만 바꾸거나 뺍니다."""
     import tempfile
-    f = _git_run(root, "fetch", "--no-tags", "-q", remote, f"+refs/heads/{branch}:{PAGES_REF}")
-    if f.returncode != 0:
-        err = _ge(f)
-        if "find remote ref" not in err.lower():
-            return {"state": "offline", "reason": err}
+    ls = _git_run(root, "ls-remote", "--exit-code", remote, f"refs/heads/{branch}")
+    if ls.returncode == 2:                                   # 가지가 아직 없다 (말글과 상관없이 끝난 코드로)
         _git_run(root, "update-ref", "-d", PAGES_REF)
         base = None
+    elif ls.returncode != 0:
+        return {"state": "offline", "reason": _ge(ls)}
     else:
+        f = _git_run(root, "fetch", "--no-tags", "-q", remote, f"+refs/heads/{branch}:{PAGES_REF}")
+        if f.returncode != 0:
+            return {"state": "offline", "reason": _ge(f)}
         base = _gs(_git_run(root, "rev-parse", "--verify", "-q", PAGES_REF + "^{commit}")) or None
+    have: dict = {}
+    if base:
+        for rec in _gs(_git_run(root, "ls-tree", "-r", "-z", base)).split("\0"):
+            meta_, _, path = rec.partition("\t")
+            parts = meta_.split()
+            if path and len(parts) == 3:
+                have[path] = parts[2]
+
+    def mark_of(path: str) -> dict:
+        if path not in have:
+            return {}
+        try:
+            d = json.loads(_gs(_git_run(root, "cat-file", "blob", have[path])) or "{}")
+            return d if isinstance(d, dict) else {}
+        except ValueError:
+            return {}
+    root_mark = mark_of(PUBLISH_MARK)
+    own_root = not have or bool(root_mark.get("outputs_publish"))
+    drop, put = [], dict(files)
+    for t in tops:
+        inside = [p for p in have if p.startswith(t + "/")]
+        tm = mark_of(f"{t}/{PUBLISH_MARK}")
+        if inside and not tm.get("outputs_publish"):
+            raise PublishError(f"gh-pages 의 {t}/ 는 이 도구가 올린 폴더가 아닙니다 -- 덮지 않습니다")
+        blobs = tm.get("blobs") if isinstance(tm.get("blobs"), dict) else {}
+        foreign = [p for p in inside if p != f"{t}/{PUBLISH_MARK}" and blobs.get(p[len(t) + 1:]) != have[p]]
+        if foreign:
+            raise PublishError(f"gh-pages 의 {t}/ 에 이 도구가 올리지 않은(또는 고친) 파일이 있습니다 -- 덮거나 지우지 않습니다: " + ", ".join(foreign[:5]))
+        if t == tops[0] and stable and tm.get("stable") == stable and all(k in have for k in files if k.startswith(t + "/")):
+            return {"state": "same", "commit": base}
+        drop += inside
+    rows_blob: dict = {}
+    for k, v in sorted(put.items()):
+        rows_blob[k] = _blob(root, v)
+    for t in tops:
+        mine = {k[len(t) + 1:]: s for k, s in rows_blob.items() if k.startswith(t + "/")}
+        mk = (json.dumps({"outputs_publish": 1, "folder": t, "blobs": mine, **({"stable": stable} if t == tops[0] else {})}, ensure_ascii=False) + "\n").encode("utf-8")
+        rows_blob[f"{t}/{PUBLISH_MARK}"] = _blob(root, mk)
+    if own_root:
+        items = "\n".join(f"<li><a href=\"{html.escape(t, quote=True)}/\">{html.escape(t)}</a></li>" for t in tops)
+        title = html.escape(str(project or "개발 관리 사이트"))
+        rf = {"index.html": ("<!doctype html>\n<html lang=\"ko\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"robots\" content=\"noindex, nofollow\">\n"
+                             f"<title>{title}</title>\n</head>\n<body>\n<h1>{title}</h1>\n<p>개발 관리 사이트 (공개본)</p>\n<ul>\n{items}\n</ul>\n</body>\n</html>\n").encode("utf-8"),
+              ".nojekyll": b""}
+        known = root_mark.get("blobs") if isinstance(root_mark.get("blobs"), dict) else {}
+        mine = {}
+        for k, v in rf.items():
+            if k in have and known.get(k) != have[k]:
+                continue                                     # 남이 두었거나 고친 뿌리 파일 -- 그대로
+            mine[k] = rows_blob[k] = _blob(root, v)
+        for k in known:
+            if k in have and k not in mine and known.get(k) == have[k] and k not in rf:
+                drop.append(k)                               # 예전에 이 도구가 둔 뿌리 파일(robots.txt 등) -- 그대로면 뺀다
+        rows_blob[PUBLISH_MARK] = _blob(root, (json.dumps({"outputs_publish": 1, "blobs": mine}, ensure_ascii=False) + "\n").encode("utf-8"))
     with tempfile.TemporaryDirectory(prefix="light-pages-") as tmp:
         env = {"GIT_INDEX_FILE": str(Path(tmp) / "index")}
         r = _git_run(root, "read-tree", *([base] if base else ["--empty"]), env=env)
         if r.returncode != 0:
             raise PublishError(f"gh-pages 를 읽지 못했습니다: {_ge(r)}")
-        have = [x for x in _gs(_git_run(root, "ls-files", "-z", env=env)).split("\0") if x] if base else []
-        have_set = set(have)
-        root_mark = {}
-        if base and PUBLISH_MARK in have_set:
-            try:
-                root_mark = json.loads(_gs(_git_run(root, "show", f"{base}:{PUBLISH_MARK}")) or "{}")
-            except ValueError:
-                root_mark = {}
-        own_root = not have or bool(root_mark.get("outputs_publish"))
-        for t in tops:
-            if [x for x in have if x.startswith(t + "/")] and f"{t}/{PUBLISH_MARK}" not in have_set:
-                raise PublishError(f"gh-pages 의 {t}/ 는 이 도구가 올린 폴더가 아닙니다 -- 덮지 않습니다")
-        if f"{tops[0]}/{PUBLISH_MARK}" in have_set:
-            try:
-                if json.loads(_gs(_git_run(root, "show", f"{base}:{tops[0]}/{PUBLISH_MARK}")) or "{}").get("stable") == stable:
-                    return {"state": "same", "commit": base}
-            except ValueError:
-                pass
-        drop = [x for x in have if any(x.startswith(t + "/") for t in tops)]
-        put = dict(files)
-        for t in tops:
-            put[f"{t}/{PUBLISH_MARK}"] = (json.dumps({"outputs_publish": 1, "folder": t, **({"stable": stable} if t == tops[0] else {})}, ensure_ascii=False)
-                                         + "\n").encode("utf-8")
-        if own_root:
-            items = "\n".join(f"<li><a href=\"{html.escape(t, quote=True)}/\">{html.escape(t)}</a></li>" for t in tops)
-            title = html.escape(str(project or "개발 관리 사이트"))
-            rf = {"index.html": ("<!doctype html>\n<html lang=\"ko\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"robots\" content=\"noindex, nofollow\">\n"
-                                 f"<title>{title}</title>\n</head>\n<body>\n<h1>{title}</h1>\n<p>개발 관리 사이트 (공개본)</p>\n<ul>\n{items}\n</ul>\n</body>\n</html>\n").encode("utf-8"),
-                  ".nojekyll": b"", "robots.txt": b"User-agent: *\nDisallow: /\n"}
-            for k, v in rf.items():
-                if k in have_set and k not in (root_mark.get("files") or []) and k != ".nojekyll":
-                    continue
-                put[k] = v
-            put[PUBLISH_MARK] = (json.dumps({"outputs_publish": 1, "files": sorted(k for k in rf if k in put)}, ensure_ascii=False) + "\n").encode("utf-8")
         if drop:
             r = _git_run(root, "update-index", "-z", "--force-remove", "--stdin", data=("\0".join(drop) + "\0").encode("utf-8"), env=env)
             if r.returncode != 0:
                 raise PublishError(f"gh-pages 의 예전 공개본을 빼지 못했습니다: {_ge(r)}")
-        rows = []
-        for k, v in sorted(put.items()):
-            h = _git_run(root, "hash-object", "-w", "--stdin", data=v)
-            if h.returncode != 0:
-                raise PublishError(f"파일을 저장소에 넣지 못했습니다: {_ge(h)}")
-            rows.append(f"100644 {_gs(h)}\t{k}")
+        rows = [f"100644 {s}\t{k}" for k, s in sorted(rows_blob.items())]
         r = _git_run(root, "update-index", "-z", "--add", "--index-info", data=("\0".join(rows) + "\0").encode("utf-8"), env=env)
         if r.returncode != 0:
             raise PublishError(f"gh-pages 의 새 공개본을 넣지 못했습니다: {_ge(r)}")
@@ -2676,18 +2771,19 @@ def _pages_commit(root: Path, files: dict, tops: list, *, remote: str, branch: s
     if c.returncode != 0 or not commit:
         raise PublishError(f"gh-pages 커밋을 만들지 못했습니다: {_ge(c)}")
     if not push:
-        return {"state": "ready", "commit": commit}
+        return {"state": "ready", "commit": commit, "first": base is None}
     pr = _git_run(root, "push", "-q", remote, f"{commit}:refs/heads/{branch}", hooks=True)      # 사용자의 pre-push hook 은 그대로
     if pr.returncode != 0:
         err = _ge(pr)
-        return {"state": "nonff" if ("non-fast-forward" in err or "fetch first" in err) else "push_failed", "reason": err, "commit": commit}
+        return {"state": "nonff" if ("non-fast-forward" in err or "fetch first" in err or "rejected" in err) else "push_failed", "reason": err, "commit": commit}
     _git_run(root, "update-ref", PAGES_REF, commit)
-    return {"state": "pushed", "commit": commit}
+    return {"state": "pushed", "commit": commit, "first": base is None}
 
 
 def publish(root, framework: str, build, *, push: bool = True) -> dict:
     """공개 설정대로 공개본을 만들어 올립니다. build(site_dir) -> write_site 의 결과 (hosting="static" 으로 그 폴더에 쓴다 -- 이 컴퓨터의 사이트는 그대로).
-    service: <web_dir>/<판 이름>/ · pages: gh-pages 가지. 품은 판의 폴더에는 안내 쪽만 (같은 쪽을 두 번 만들지 않는다)."""
+    service: <web_dir>/<판 이름>/ · pages: gh-pages 가지. 품은 판의 폴더에는 안내 쪽만 (같은 쪽을 두 번 만들지 않는다).
+    push=False(--dry-run): 쓰거나 올리지 않고 무엇이 바뀌는지만."""
     import tempfile
     root = Path(root).resolve()
     conf = load_publish(root, framework)
@@ -2711,10 +2807,12 @@ def publish(root, framework: str, build, *, push: bool = True) -> dict:
         name = SITE_LABELS[framework]
         if conf["mode"] == "service":
             base = _web_dir(root, conf.get("web_dir"))
-            w = _write_tree(base, files, tops, meta)
-            ign = _git_run(root, "check-ignore", "-q", "--", str((base / name / "index.html").resolve())).returncode == 0
-            return {"state": "written" if (w["changed"] or w["removed"]) else "same", "mode": "service",
-                    "dir": "." if base == root else base.relative_to(root).as_posix(), "path": f"/{name}/", "folders": tops, "ignored": ign, **w}
+            w = _write_tree(base, files, tops, meta, dry_run=not push)
+            rr = Path(os.path.realpath(root))
+            ign = _git_run(root, "check-ignore", "-q", "--", str(base / name / "index.html")).returncode == 0
+            st = "ready" if not push else ("written" if (w["changed"] or w["removed"]) else "same")
+            return {"state": st, "mode": "service", "dir": "." if base == rr else base.relative_to(rr).as_posix(), "path": f"/{name}/",
+                    "folders": tops, "ignored": ign, **w}
         remote, branch = str(conf.get("remote") or "origin"), str(conf.get("branch") or PAGES_BRANCH)
         url = _gs(_git_run(root, "remote", "get-url", remote))
         if not url:
@@ -2725,7 +2823,8 @@ def publish(root, framework: str, build, *, push: bool = True) -> dict:
             res = _pages_commit(root, files, tops, remote=remote, branch=branch, project=sj.get("project"), msg=msg, push=push, stable=stable)
             if res["state"] != "nonff":
                 break
-        return {**res, "mode": "pages", "remote": remote, "branch": branch, "folders": tops, "url": pages_url(url, framework), "files": len(files)}
+        return {**res, "mode": "pages", "remote": remote, "branch": branch, "folders": tops, "url": pages_url(url, framework),
+                "github": bool(_github(url)), "files": len(files)}
 
 
 def publish_lines(res: dict, framework: str, cmd: str = "datalight.py publish") -> list:
@@ -2737,18 +2836,25 @@ def publish_lines(res: dict, framework: str, cmd: str = "datalight.py publish") 
         return ["공개하지 않기로 했습니다 (none) -- 이 컴퓨터의 개발 관리 사이트만"]
     inc = ", ".join(f"{x}/ (안내 쪽만)" for x in res.get("folders", [])[1:])
     if res.get("mode") == "service":
-        out = [f"공개본을 {res['dir']}/{name}/ 에 {'썼습니다' if st == 'written' else '그대로 두었습니다 (바뀐 것 없음)'} -- 파일 {res['files']} · 바뀜 {res['changed']} · 지움 {res['removed']}"
-               + (f" · {inc}" if inc else ""),
-               f"  사이트를 올리면(배포) <서비스 주소>/{name}/ 에서 보입니다 ({res['dir']} 를 주소 뿌리로 내보낼 때) -- 이 폴더도 저장(커밋)합니다"]
+        verb = {"written": "썼습니다", "same": "그대로 두었습니다 (바뀐 것 없음)", "ready": "쓸 준비만 했습니다 (--dry-run -- 쓰지 않음)"}.get(st, st)
+        out = [f"공개본을 {res['dir']}/{name}/ 에 {verb} -- 파일 {res['files']} · 바뀜 {res['changed']} · 지움 {res['removed']}" + (f" · {inc}" if inc else "")]
+        if st == "written":
+            out.append(f"  사이트를 올리면(배포) <서비스 주소>/{name}/ 에서 보입니다 ({res['dir']} 를 주소 뿌리로 내보낼 때) -- 이 폴더도 저장(커밋)합니다")
         if res.get("ignored"):
             out.append("  [알림] 이 폴더는 git 이 무시합니다 -- 저장소에서 가져가는 배포면 보이지 않습니다")
         return out
     if st in ("pushed", "same"):
-        return [f"공개본을 {res['remote']} 의 {res['branch']} 가지에 {'올렸습니다' if st == 'pushed' else '그대로 두었습니다 (바뀐 것 없음)'}" + (f" · {inc}" if inc else ""),
-                f"  주소: {res.get('url') or '(GitHub 이 아닙니다)'} -- 처음이면 GitHub 저장소 Settings → Pages 에서 'Deploy from a branch' · {res['branch']} · / (root) 로 "
-                "한 번 켭니다. 누구나 볼 수 있습니다"]
+        out = [f"공개본을 {res['remote']} 의 {res['branch']} 가지에 {'올렸습니다' if st == 'pushed' else '그대로 두었습니다 (바뀐 것 없음)'}" + (f" · {inc}" if inc else "")]
+        if res.get("github"):
+            out.append(f"  주소: {res.get('url')} -- 누구나 볼 수 있습니다")
+            if res.get("first"):
+                out.append(f"  처음이면 GitHub 저장소 Settings → Pages 에서 'Deploy from a branch' · {res['branch']} · / (root) 로 한 번 켭니다 "
+                           "(이미 다른 곳을 보여 주고 있으면 바꾸지 않습니다 -- 그때는 그 사이트 폴더 아래로: --set service --web-dir <그 폴더>)")
+        else:
+            out.append("  원격이 GitHub 이 아닙니다 -- 그 서비스가 gh-pages 가지를 사이트로 보여 주는지 확인합니다")
+        return out
     if st == "ready":
-        return [f"올릴 준비만 했습니다 (gh-pages 커밋 {str(res.get('commit', ''))[:8]})"]
+        return [f"올릴 준비만 했습니다 (gh-pages 커밋 {str(res.get('commit', ''))[:8]} -- 올리지 않음)"]
     return [f"공개하지 못했습니다 ({st}): {res.get('reason', '')}"]
 
 

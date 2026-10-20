@@ -9,6 +9,12 @@
 - **같은 쪽을 두 번 만들지 않는다** -- dev-process-light(`light-portal`)가 쓰는 함수(`publish` · `publish_files`)도 여기에: `dev-process-light/` 에 5쪽,
   `data-expert-framework-light/` 에는 안내 쪽만. dev-process-light 프로젝트에서는 `site` · `publish` 가 멈추고 `light-portal` 을 알린다
 - 화면 틀 사본 **1.4.0** (전문판 `bcc289a`) -- 공개본은 사이트 서버를 찾지 않는다 · 모든 쪽에 noindex
+- 독립 검토 11건 반영: 공개본 폴더 안의 링크(심링크 · Windows 정션)로 밖에 쓰거나 지우던 것 -- 실제 경로로 본다 · Windows 에서 줄 끝(CRLF)이 바뀐 공개본을
+  '누가 고침'으로 보던 것 · 쓰다 멈추면(잠긴 파일 등) 다음 공개가 영영 막히던 것 -- 쓰기 전에 새 지문을 표시에 함께 · gh-pages 에서 사용자가 둔(고친) 뿌리 첫 쪽 · 판 폴더 안의
+  파일을 덮거나 지우던 것 -- blob 지문으로 이 도구가 올린 그대로일 때만 · git 의 말글이 한국어면 첫 Pages 공개가 늘 실패하던 것 -- 끝난 코드(`ls-remote --exit-code`)와 영어 글로 ·
+  이미 다른 곳(main 의 /docs · Actions)을 보여 주는 Pages 를 gh-pages 로 바꾸라고 하던 것 -- `--set pages` 가 멈추고 사이트 폴더 아래로 안내, 설정 안내는 처음 한 번만 ·
+  뿌리 `robots.txt` 를 두지 않는다 (사용자 사이트 `<계정>.github.io` 전체를 막는다 -- 쪽마다 noindex) · `--dry-run` 이 서비스 폴더에 쓰던 것 ·
+  공개본에 내 네트워크 주소(사설 IP · `.local` 이름)가 남던 것 -- `<내부 주소>` 로 · `publish_dirs()` (dev-process-light 가 저장 목록에서 공개본 저장을 뺀다)
 
 ## 0.9.0 — 2026-10-20 · 새 판 반영이 원칙, 고친 것은 묻는다
 - 소유자 원칙(2026-10-20): "프레임워크가 변경되면 로컬 파일이 있어도 반영하는 걸 원칙으로 한다. 다만 결정은 사용자에게 맡긴다 ... 차이가 발생할 경우 무조건 물어볼 수 있도록"

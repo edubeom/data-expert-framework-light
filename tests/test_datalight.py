@@ -1515,7 +1515,8 @@ class V010(unittest.TestCase):
             r = dl.publish(root, "data-light", lambda out: dl.build_site(model, out, hosting="static"))
             self.assertEqual(r["state"], "pushed", r)
             names = set(self._git(remote, "ls-tree", "--name-only", "gh-pages").split())
-            self.assertTrue({"data-expert-framework-light", "index.html", ".nojekyll", "robots.txt"} <= names, names)
+            self.assertTrue({"data-expert-framework-light", "index.html", ".nojekyll"} <= names, names)
+            self.assertNotIn("robots.txt", names)                                 # 사용자 사이트(<계정>.github.io)면 그 주소 전체를 막는다 -- 쪽마다 noindex 로
             self.assertEqual(self._git(root, "rev-parse", "HEAD"), head)
             self.assertEqual(self._git(root, "status", "--porcelain"), st)
             self.assertEqual(dl.publish(root, "data-light", lambda out: dl.build_site(model, out, hosting="static"))["state"], "same")
@@ -1537,6 +1538,154 @@ class V010(unittest.TestCase):
                 self.assertNotEqual(out.returncode, 0)
                 self.assertIn("dev-process-light", out.stdout)                            # light-portal 이 데이터 쪽을 함께 만든다
             self.assertFalse((root / "data" / "outputs").exists())
+
+
+class V010Review(unittest.TestCase):
+    """0.10.0 독립 검토 반영 -- 링크 밖으로 쓰기 · CRLF · 쓰다 멈춤 · gh-pages 의 남의 파일 · 말글 · --dry-run · 내 네트워크 주소 · 저장 목록 고리."""
+
+    _proj = V010._proj
+    _git = V010._git
+
+    def _build(self, model):
+        return lambda out: dl.build_site(model, out, hosting="static")
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "심링크 없음")
+    def test_links_inside_the_published_folder_never_lead_outside(self):
+        with tempfile.TemporaryDirectory() as d:
+            root, model = self._proj(d, git=False)
+            dl.set_publish(root, "data-light", "service", by="user", quote="ok", web_dir="public")
+            dl.publish(root, "data-light", self._build(model))
+            victim = Path(d) / "outside"
+            victim.mkdir()
+            (victim / "keep.txt").write_text("mine", encoding="utf-8")
+            pub = root / "public" / "data-expert-framework-light"
+            shutil.rmtree(pub / "assets")
+            try:
+                os.symlink(victim, pub / "assets", target_is_directory=True)
+            except OSError:
+                self.skipTest("심링크를 만들 수 없음")
+            mk = json.loads((pub / ".outputs-publish.json").read_text(encoding="utf-8"))
+            mk["hashes"]["assets/keep.txt"] = dl._nsha(b"mine")
+            (pub / ".outputs-publish.json").write_text(json.dumps(mk), encoding="utf-8")
+            with self.assertRaises(dl.PublishError):
+                dl.publish(root, "data-light", self._build(model))
+            self.assertEqual(sorted(x.name for x in victim.iterdir()), ["keep.txt"])
+
+    def test_crlf_checkouts_and_a_failed_write_do_not_block_publishing(self):
+        with tempfile.TemporaryDirectory() as d:
+            root, model = self._proj(d, git=False)
+            dl.set_publish(root, "data-light", "service", by="user", quote="ok", web_dir="public")
+            dl.publish(root, "data-light", self._build(model))
+            pub = root / "public" / "data-expert-framework-light"
+            for f in pub.rglob("*"):
+                if f.is_file() and f.suffix in (".css", ".js", ".html"):
+                    f.write_bytes(f.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))   # Windows 의 git 이 받으면서 바꾼 줄 끝
+            self.assertEqual(dl.publish(root, "data-light", self._build(model))["state"], "same")
+            m = dl.load(model); m["project"] = "바뀐 이름"; dl.save(m, model)
+            real = dl._write_tree
+
+            def boom(base, files, tops, meta, dry_run=False):           # 쓰다 멈춤 (Windows 의 잠긴 파일 · 꽉 찬 디스크 · Ctrl+C)
+                orig = open
+                n = {"c": 0}
+
+                def flaky(f, mode="r", *a, **k):
+                    if "w" in mode and str(f).endswith(".js"):
+                        n["c"] += 1
+                        if n["c"] == 3:
+                            raise OSError("being used by another process")
+                    return orig(f, mode, *a, **k)
+                import builtins
+                builtins.open = flaky
+                try:
+                    return real(base, files, tops, meta, dry_run)
+                finally:
+                    builtins.open = orig
+            dl._write_tree = boom
+            try:
+                with self.assertRaises(OSError):
+                    dl.publish(root, "data-light", self._build(model))
+            finally:
+                dl._write_tree = real
+            m["project"] = "또 바뀐 이름"; dl.save(m, model)
+            self.assertEqual(dl.publish(root, "data-light", self._build(model))["state"], "written")   # 다음 공개가 이어서 쓴다
+
+    def test_dry_run_writes_nothing_and_private_addresses_are_removed(self):
+        with tempfile.TemporaryDirectory() as d:
+            root, model = self._proj(d, git=False)
+            m = dl.load(model); m["project"] = "가게 http://192.168.0.12:5173/ my-laptop.local:5173 10.1.2.3"; dl.save(m, model)
+            dl.set_publish(root, "data-light", "service", by="user", quote="ok", web_dir="public")
+            r = dl.publish(root, "data-light", self._build(model), push=False)
+            self.assertEqual(r["state"], "ready")
+            self.assertFalse((root / "public").exists())
+            dl.publish(root, "data-light", self._build(model))
+            text = "\n".join(f.read_text(encoding="utf-8") for f in (root / "public").rglob("*") if f.is_file() and f.suffix in (".json", ".js", ".html"))
+            for leak in ("192.168.0.12", "my-laptop.local", "10.1.2.3"):
+                self.assertNotIn(leak, text)
+            self.assertIn("<내부 주소>", text)
+
+    @unittest.skipUnless(shutil.which("git"), "git 없음")
+    def test_pages_never_drops_or_overwrites_files_it_did_not_put(self):
+        with tempfile.TemporaryDirectory() as d:
+            root, model = self._proj(d)
+            remote = Path(d) / "remote.git"
+            subprocess.run(["git", "init", "-q", "--bare", str(remote)], capture_output=True, check=True)
+            self._git(root, "remote", "add", "origin", str(remote))
+            dl.set_publish(root, "data-light", "pages", by="user", quote="페이지로")
+            dl.publish(root, "data-light", self._build(model))
+            other = Path(d) / "other"
+            subprocess.run(["git", "clone", "-q", "-b", "gh-pages", str(remote), str(other)], capture_output=True, check=True)
+            self._git(other, "config", "user.email", "o@example.com"); self._git(other, "config", "user.name", "o")
+            (other / "index.html").write_text("<h1>내 첫 쪽</h1>", encoding="utf-8")
+            self._git(other, "commit", "-qam", "my index"); self._git(other, "push", "-q", "origin", "gh-pages")
+            m = dl.load(model); m["project"] = "바뀜"; dl.save(m, model)
+            self.assertEqual(dl.publish(root, "data-light", self._build(model))["state"], "pushed")
+            self.assertEqual(self._git(remote, "show", "gh-pages:index.html"), "<h1>내 첫 쪽</h1>")     # 사용자가 고친 뿌리 첫 쪽은 그대로
+            self._git(other, "pull", "-q", "origin", "gh-pages")
+            (other / "data-expert-framework-light" / "meeting-notes.html").write_text("notes", encoding="utf-8")
+            self._git(other, "add", "-A"); self._git(other, "commit", "-qm", "notes"); self._git(other, "push", "-q", "origin", "gh-pages")
+            m["project"] = "또 바뀜"; dl.save(m, model)
+            with self.assertRaises(dl.PublishError):
+                dl.publish(root, "data-light", self._build(model))
+            self.assertEqual(self._git(remote, "show", "gh-pages:data-expert-framework-light/meeting-notes.html"), "notes")
+
+    @unittest.skipUnless(shutil.which("git"), "git 없음")
+    def test_first_pages_publish_works_with_a_translated_git(self):
+        with tempfile.TemporaryDirectory() as d:
+            root, model = self._proj(d)
+            remote = Path(d) / "remote.git"
+            subprocess.run(["git", "init", "-q", "--bare", str(remote)], capture_output=True, check=True)
+            self._git(root, "remote", "add", "origin", str(remote))
+            dl.set_publish(root, "data-light", "pages", by="user", quote="페이지로")
+            old = os.environ.get("LANGUAGE"), os.environ.get("LC_ALL")
+            os.environ["LANGUAGE"], os.environ["LC_ALL"] = "ko", "ko_KR.UTF-8"
+            try:
+                r = dl.publish(root, "data-light", self._build(model))
+            finally:
+                for k, v in zip(("LANGUAGE", "LC_ALL"), old):
+                    if v is None:
+                        os.environ.pop(k, None)
+                    else:
+                        os.environ[k] = v
+            self.assertEqual(r["state"], "pushed", r)
+            self.assertTrue(r["first"])
+
+    def test_pages_is_refused_when_it_already_shows_another_site(self):
+        with tempfile.TemporaryDirectory() as d:
+            root, model = self._proj(d)
+            self._git(root, "remote", "add", "origin", "https://github.com/alice/shop.git")
+            real = dl._pages_source
+            dl._pages_source = lambda url: ("branch", "main", "/docs")
+            try:
+                with self.assertRaises(dl.PublishError) as e:
+                    dl.set_publish(root, "data-light", "pages", by="user", quote="페이지로")
+                self.assertIn("--set service", str(e.exception))
+                dl._pages_source = lambda url: ("branch", "gh-pages", "/")
+                self.assertEqual(dl.set_publish(root, "data-light", "pages", by="user", quote="페이지로")["mode"], "pages")
+            finally:
+                dl._pages_source = real
+            self.assertEqual(dl.publish_dirs(root), [])
+            dl.set_publish(root, "data-light", "service", by="user", quote="ok", web_dir="docs")
+            self.assertEqual(dl.publish_dirs(root), ["docs/data-expert-framework-light/"])
 
 
 if __name__ == "__main__":
