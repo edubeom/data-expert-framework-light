@@ -10,18 +10,18 @@
 - 이름·전화번호 같은 **개인정보는 자동으로 따로** 보관합니다
 - 갖고 있는 **엑셀·CSV** 에서 시작할 수 있습니다 (넣기 전에 꼭 물어보고, 넣기 전 DB 를 백업합니다)
 - **"확인해 줘" 대신 확인 장치**: "이 데이터로 무엇을 알 수 있어야 하나"를 먼저 정해 두면, 매번 실제로 돌려 보고 통과해야 완성입니다
-- [dev-process-light](https://github.com/sungbeom78/dev-process-light) 와 함께 쓰면 홈페이지 만들기 → 데이터 저장까지 한 흐름
+- [dev-process-light](https://github.com/edubeom/dev-process-light) 와 함께 쓰면 홈페이지 만들기 → 데이터 저장까지 한 흐름
 
 ## 설치
 
 **Claude Code / Cowork 플러그인**
 ```
-/plugin marketplace add sungbeom78/data-expert-framework-light
+/plugin marketplace add edubeom/data-expert-framework-light
 /plugin install data-expert-light
 ```
 **dev-process-light 로 설치했다면** 이 스킬이 이미 함께 들어 있습니다 — 플러그인은 따로 깔지 않아도 됩니다 (둘 다 깔면 같은 스킬이 두 번 보입니다).
 
-**스킬만** — [Releases](https://github.com/sungbeom78/data-expert-framework-light/releases) 의 `data-light-skill-<버전>.zip` 을 Claude 설정의 스킬에 올립니다.
+**스킬만** — [Releases](https://github.com/edubeom/data-expert-framework-light/releases) 의 `data-light-skill-<버전>.zip` 을 Claude 설정의 스킬에 올립니다.
 
 필요한 것: Python 3.9 이상 (추가 설치 없음. 엑셀을 쓰려면 `pip install openpyxl`)
 

@@ -66,7 +66,7 @@ def update(src_repo: Path, ref: str) -> None:
     ver = re.search(rb'__version__ = "([^"]+)"', show(f"{SRC}/__init__.py"))
     LOCK.write_text(json.dumps({"about": "data-expert-framework 의 runtime/viewer/dataviewer 사본 (바이트 그대로). 고치지 않는다 -- "
                                          "원본에서 고치고 tools/update_viewer.py 로만 바꾼다.",
-                                "source": "sungbeom78/data-expert-framework (runtime/viewer)", "commit": commit,
+                                "source": "edubeom/data-expert-framework (runtime/viewer)", "commit": commit,
                                 "version": ver.group(1).decode() if ver else "?", "files": files},
                                ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(f"[OK] 뷰어 {commit[:7]} 을 {DEST.relative_to(ROOT)} 에 담음 ({len(files)}개 파일)")

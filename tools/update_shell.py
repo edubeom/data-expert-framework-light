@@ -82,7 +82,7 @@ def update(src_repo: Path, ref: str) -> None:
     ver = (SHELL / "VERSION").read_text(encoding="utf-8").strip()
     LOCK.write_text(json.dumps({"about": "data-expert-framework 의 runtime/outputs-shell 사본 (바이트 그대로, 줄 끝 LF). 고치지 않는다 -- "
                                          "원본에서 고치고 tools/update_shell.py 로만 바꾼다.",
-                                "source": "sungbeom78/data-expert-framework (runtime/outputs-shell)", "commit": commit,
+                                "source": "edubeom/data-expert-framework (runtime/outputs-shell)", "commit": commit,
                                 "version": ver, "fingerprint": fingerprint(SHELL), "files": files},
                                ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(f"[OK] 화면 틀 {ver} ({commit[:7]}) 을 {SHELL.relative_to(ROOT)} 에 담음 ({len(files)}개 파일)")

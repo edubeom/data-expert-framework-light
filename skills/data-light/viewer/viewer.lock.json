@@ -1,6 +1,6 @@
 {
   "about": "data-expert-framework 의 runtime/viewer/dataviewer 사본 (바이트 그대로). 고치지 않는다 -- 원본에서 고치고 tools/update_viewer.py 로만 바꾼다.",
-  "source": "sungbeom78/data-expert-framework (runtime/viewer)",
+  "source": "edubeom/data-expert-framework (runtime/viewer)",
   "commit": "9b128746a7bc629adc3d94ec4990b9f9b5af971a",
   "version": "0.9.3",
   "files": {

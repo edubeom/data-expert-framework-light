@@ -1,6 +1,6 @@
 # dev-process-light 와 함께 쓰기
 
-[dev-process-light](https://github.com/sungbeom78/dev-process-light) 0.8 이상은 이 스킬(data-light)을 `kit/skills/data-light` 에 **짝 버전으로 함께 담아** 설치한다
+[dev-process-light](https://github.com/edubeom/dev-process-light) 0.8 이상은 이 스킬(data-light)을 `kit/skills/data-light` 에 **짝 버전으로 함께 담아** 설치한다
 (`data-light.lock.json` 이 커밋·버전을 고정). 프로젝트 안에서는 이 스킬 파일을 고치지 않는다 — 고칠 것은 이 저장소에 요청한다.
 
 ## 언제 넘어오나

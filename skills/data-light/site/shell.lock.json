@@ -1,6 +1,6 @@
 {
   "about": "data-expert-framework 의 runtime/outputs-shell 사본 (바이트 그대로, 줄 끝 LF). 고치지 않는다 -- 원본에서 고치고 tools/update_shell.py 로만 바꾼다.",
-  "source": "sungbeom78/data-expert-framework (runtime/outputs-shell)",
+  "source": "edubeom/data-expert-framework (runtime/outputs-shell)",
   "commit": "65d1e2fdd0230fade09966a358ab465d747bed84",
   "version": "1.4.1",
   "fingerprint": "fcb318dc117739f9",
